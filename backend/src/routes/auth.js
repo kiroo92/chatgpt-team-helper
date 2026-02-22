@@ -7,6 +7,7 @@ import { sendVerificationCodeEmail } from '../services/email-service.js'
 import { getEmailDomainWhitelist, isEmailDomainAllowed } from '../utils/email-domain-whitelist.js'
 import { getAdminMenuTreeForAccessContext, getUserAccessContext } from '../services/rbac.js'
 import { safeInsertPointsLedgerEntry } from '../utils/points-ledger.js'
+import { isRegisterEmailVerificationRequired } from '../utils/register-email-verification.js'
 
 const router = express.Router()
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production'
@@ -124,6 +125,10 @@ router.post('/register/send-code', async (req, res) => {
     }
 
     const db = await getDatabase()
+    const requiresVerification = await isRegisterEmailVerificationRequired(db)
+    if (!requiresVerification) {
+      return res.json({ message: 'SMTP 未配置或为示例值，注册无需验证码。', bypass: true })
+    }
 
     const whitelist = await getEmailDomainWhitelist(db)
     if (!isEmailDomainAllowed(email, whitelist)) {
@@ -157,14 +162,15 @@ router.post('/register', async (req, res) => {
     if (!EMAIL_REGEX.test(email)) {
       return res.status(400).json({ error: '邮箱格式不正确' })
     }
-    if (!/^[0-9]{6}$/.test(code)) {
-      return res.status(400).json({ error: '验证码格式不正确' })
-    }
     if (!password || password.length < 6) {
       return res.status(400).json({ error: '密码至少需要 6 个字符' })
     }
 
     const db = await getDatabase()
+    const requiresVerification = await isRegisterEmailVerificationRequired(db)
+    if (requiresVerification && !/^[0-9]{6}$/.test(code)) {
+      return res.status(400).json({ error: '验证码格式不正确' })
+    }
 
     const whitelist = await getEmailDomainWhitelist(db)
     if (!isEmailDomainAllowed(email, whitelist)) {
@@ -176,25 +182,29 @@ router.post('/register', async (req, res) => {
       return res.status(409).json({ error: '邮箱已注册' })
     }
 
-    const codeResult = db.exec(
-      `
-        SELECT id, code_hash
-        FROM email_verification_codes
-        WHERE email = ? AND purpose = 'register'
-          AND consumed_at IS NULL
-          AND expires_at >= DATETIME('now', 'localtime')
-        ORDER BY created_at DESC
-        LIMIT 1
-      `,
-      [email]
-    )
-    if (!codeResult[0]?.values?.length) {
-      return res.status(400).json({ error: '验证码无效或已过期' })
-    }
+    let codeId = null
+    if (requiresVerification) {
+      const codeResult = db.exec(
+        `
+          SELECT id, code_hash
+          FROM email_verification_codes
+          WHERE email = ? AND purpose = 'register'
+            AND consumed_at IS NULL
+            AND expires_at >= DATETIME('now', 'localtime')
+          ORDER BY created_at DESC
+          LIMIT 1
+        `,
+        [email]
+      )
+      if (!codeResult[0]?.values?.length) {
+        return res.status(400).json({ error: '验证码无效或已过期' })
+      }
 
-    const [codeId, expectedHash] = codeResult[0].values[0]
-    if (sha256(code) !== expectedHash) {
-      return res.status(400).json({ error: '验证码无效或已过期' })
+      const [resolvedCodeId, expectedHash] = codeResult[0].values[0]
+      if (sha256(code) !== expectedHash) {
+        return res.status(400).json({ error: '验证码无效或已过期' })
+      }
+      codeId = resolvedCodeId
     }
 
     let inviterUserId = null
@@ -228,10 +238,12 @@ router.post('/register', async (req, res) => {
       db.run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', [userId, roleId])
     }
 
-    db.run(
-      `UPDATE email_verification_codes SET consumed_at = DATETIME('now', 'localtime') WHERE id = ?`,
-      [codeId]
-    )
+    if (codeId) {
+      db.run(
+        `UPDATE email_verification_codes SET consumed_at = DATETIME('now', 'localtime') WHERE id = ?`,
+        [codeId]
+      )
+    }
 
     if (rewardPoints > 0) {
       safeInsertPointsLedgerEntry(db, {

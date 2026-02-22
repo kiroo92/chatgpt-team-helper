@@ -60,7 +60,7 @@ export const authService = {
     return response.data
   },
 
-  async register(payload: { email: string; code: string; password: string; inviteCode?: string }) {
+  async register(payload: { email: string; code?: string; password: string; inviteCode?: string }) {
     const response = await api.post('/auth/register', payload)
     if (response.data.token) {
       localStorage.setItem('token', response.data.token)
@@ -526,6 +526,7 @@ export interface AppRuntimeConfig {
   locale: string
   turnstileSiteKey?: string | null
   turnstileEnabled?: boolean
+  registerEmailCodeRequired?: boolean
   channels?: Channel[]
   features?: {
     xhs?: boolean

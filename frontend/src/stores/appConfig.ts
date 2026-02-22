@@ -24,6 +24,7 @@ export const useAppConfigStore = defineStore('app-config', () => {
   const channels = ref<Channel[]>([])
   const openAccountsEnabled = ref(true)
   const openAccountsMaintenanceMessage = ref(DEFAULT_OPEN_ACCOUNTS_MAINTENANCE_MESSAGE)
+  const registerEmailCodeRequired = ref(true)
   const features = ref<FeatureFlags>({
     xhs: true,
     xianyu: true,
@@ -65,6 +66,9 @@ export const useAppConfigStore = defineStore('app-config', () => {
       const value = (config.openAccountsMaintenanceMessage || '').trim()
       openAccountsMaintenanceMessage.value = value || DEFAULT_OPEN_ACCOUNTS_MAINTENANCE_MESSAGE
     }
+    if ('registerEmailCodeRequired' in config) {
+      registerEmailCodeRequired.value = Boolean(config.registerEmailCodeRequired ?? true)
+    }
     if (config.features && typeof config.features === 'object') {
       const next = { ...features.value }
       if ('xhs' in config.features) next.xhs = Boolean((config.features as any).xhs)
@@ -99,6 +103,7 @@ export const useAppConfigStore = defineStore('app-config', () => {
     channels,
     openAccountsEnabled,
     openAccountsMaintenanceMessage,
+    registerEmailCodeRequired,
     features,
     resolvedTurnstileSiteKey,
     resolvedTurnstileEnabled,

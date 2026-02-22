@@ -2,6 +2,7 @@ import express from 'express'
 import { getTurnstileSettings } from '../utils/turnstile-settings.js'
 import { getFeatureFlags } from '../utils/feature-flags.js'
 import { getChannels } from '../utils/channels.js'
+import { isRegisterEmailVerificationRequired } from '../utils/register-email-verification.js'
 
 const router = express.Router()
 
@@ -29,6 +30,7 @@ router.get('/runtime', async (req, res) => {
     const openAccountsEnabled = isOpenAccountsEnabled()
     const turnstileSettings = await getTurnstileSettings()
     const turnstileSiteKey = String(turnstileSettings.siteKey || '').trim()
+    const registerEmailCodeRequired = await isRegisterEmailVerificationRequired()
     const features = await getFeatureFlags()
     const { list: channelList } = await getChannels()
     const channels = (channelList || [])
@@ -50,6 +52,7 @@ router.get('/runtime', async (req, res) => {
       locale,
       turnstileEnabled: Boolean(turnstileSettings.enabled),
       turnstileSiteKey: turnstileSiteKey || null,
+      registerEmailCodeRequired,
       features,
       channels,
       openAccountsEnabled,

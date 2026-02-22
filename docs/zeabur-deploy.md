@@ -70,4 +70,6 @@ INIT_ADMIN_PASSWORD=你的管理员密码
 - **Telegram 机器人**：`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_IDS` 等
 - **支付功能**：`ZPAY_BASE_URL`, `ZPAY_PID`, `ZPAY_KEY` 等
 
+> 注意：如 `SMTP_HOST` 未配置，或仍为示例值 `smtp.example.com`，系统将跳过发送注册验证码/订单邮件/系统告警邮件，且注册不需要验证码。
+
 详见项目 [README](https://github.com/Kylsky/chatgpt-team-helper)。

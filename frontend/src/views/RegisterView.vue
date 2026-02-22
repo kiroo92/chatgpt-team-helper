@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { authService } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useAppConfigStore } from '@/stores/appConfig'
 
 const router = useRouter()
 const route = useRoute()
+const appConfigStore = useAppConfigStore()
+
+const emailCodeRequired = computed(() => appConfigStore.registerEmailCodeRequired)
 
 const email = ref('')
 const code = ref('')
@@ -65,6 +69,7 @@ onMounted(() => {
 watch(() => route.query, () => applyInviteFromQuery(), { deep: true })
 
 const handleSendCode = async () => {
+  if (!emailCodeRequired.value) return
   error.value = ''
   success.value = ''
 
@@ -97,7 +102,7 @@ const handleRegister = async () => {
       error.value = '请输入邮箱'
       return
     }
-    if (!code.value.trim()) {
+    if (emailCodeRequired.value && !code.value.trim()) {
       error.value = '请输入验证码'
       return
     }
@@ -110,12 +115,14 @@ const handleRegister = async () => {
       return
     }
 
-    await authService.register({
+    const payload: { email: string; password: string; inviteCode?: string; code?: string } = {
       email: trimmedEmail,
-      code: code.value.trim(),
       password: password.value,
       ...(inviteCode.value.trim() ? { inviteCode: inviteCode.value.trim() } : {}),
-    })
+    }
+    if (emailCodeRequired.value) payload.code = code.value.trim()
+
+    await authService.register(payload)
 
     router.push('/admin')
   } catch (err: any) {
@@ -156,7 +163,7 @@ const handleRegister = async () => {
             />
           </div>
 
-          <div class="space-y-2">
+          <div v-if="emailCodeRequired" class="space-y-2">
             <Label for="code" class="text-xs font-medium text-gray-500 ml-1 uppercase tracking-wider">验证码</Label>
             <div class="flex gap-3">
               <Input
@@ -177,6 +184,9 @@ const handleRegister = async () => {
                 {{ countdown > 0 ? `${countdown}s` : (sendingCode ? '发送中...' : '发送验证码') }}
               </Button>
             </div>
+          </div>
+          <div v-else class="text-sm text-gray-500 bg-gray-50/60 border border-gray-100 rounded-xl px-4 py-3">
+            SMTP 未配置（或为示例值 <span class="font-mono">smtp.example.com</span>），注册无需邮箱验证码。
           </div>
 
           <div class="space-y-2">
