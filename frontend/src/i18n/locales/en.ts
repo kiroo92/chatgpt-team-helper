@@ -78,7 +78,8 @@ export default {
       recentWithdrawals: 'Recent Withdrawals',
       noWithdrawals: 'No withdrawal records',
       pointsUnit: 'points',
-      cashback: 'Cashback ¥{amount}',      errors: {
+      cashback: 'Cashback ¥{amount}',
+      errors: {
         notOpen: 'Withdrawal is not available',
         invalidPoints: 'Please enter valid withdrawal points',
         minPoints: 'Minimum withdrawal is {min} points',
@@ -86,15 +87,6 @@ export default {
         maxPoints: 'Maximum withdrawal is {max} points per request',
         insufficientPoints: 'Insufficient points for withdrawal',
         noAccount: 'Please enter your payout account',
-      },
-      success: 'Withdrawal request submitted',      errors: {
-        notOpen: 'Withdrawal is not available',
-        invalidPoints: 'Please enter valid points',
-        minPoints: 'Minimum withdrawal: {min} points',
-        stepPoints: 'Points must be a multiple of {step}',
-        maxPoints: 'Maximum withdrawal per request: {max} points',
-        insufficientPoints: 'Insufficient points for withdrawal',
-        noAccount: 'Please enter payment account',
       },
       success: 'Withdrawal request submitted',
     },
