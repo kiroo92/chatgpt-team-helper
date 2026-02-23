@@ -14,6 +14,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { useToast } from '@/components/ui/toast'
+import LanguageSwitch from '@/components/LanguageSwitch.vue'
 import { Copy, Link2, RefreshCw, Ticket, Users, Coins, ShoppingCart, CheckCircle2, Clock, RotateCcw, Lock, UserRound } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -239,6 +240,9 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-8">
+    <div class="flex justify-end">
+      <LanguageSwitch />
+    </div>
     <div v-if="inviteEnabled" class="grid gap-8 lg:grid-cols-3">
       <Card class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-8 py-6">

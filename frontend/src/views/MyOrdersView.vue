@@ -8,6 +8,7 @@ import { useI18n } from '@/composables/useI18n'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useToast } from '@/components/ui/toast'
+import LanguageSwitch from '@/components/LanguageSwitch.vue'
 import { Link2, RefreshCw, ShoppingCart, CheckCircle2, Clock, RotateCcw, Ban, AlertCircle, Coins } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -195,15 +196,19 @@ onUnmounted(() => {
 <template>
   <div class="space-y-8">
     <Teleport v-if="teleportReady" to="#header-actions">
-      <Button
-        variant="outline"
-        class="bg-white border-gray-200 text-gray-700 hover:bg-gray-50 h-10 rounded-xl px-4"
-        :disabled="loading"
-        @click="loadOrders"
-      >
-        <RefreshCw class="h-4 w-4 mr-2" :class="loading ? 'animate-spin' : ''" />
-        {{ t('myOrders.refreshList') }}
-      </Button>
+      <div class="flex items-center gap-3">
+        <Button
+          variant="outline"
+          class="bg-white border-gray-200 text-gray-700 hover:bg-gray-50 h-10 rounded-xl px-4"
+          :disabled="loading"
+          @click="loadOrders"
+        >
+          <RefreshCw class="h-4 w-4 mr-2" :class="loading ? 'animate-spin' : ''" />
+          {{ t('myOrders.refreshList') }}
+        </Button>
+
+        <LanguageSwitch />
+      </div>
     </Teleport>
 
     <div class="grid grid-cols-1 md:grid-cols-4 gap-6">

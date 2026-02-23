@@ -15,6 +15,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { useToast } from '@/components/ui/toast'
+import LanguageSwitch from '@/components/LanguageSwitch.vue'
 import { Coins, Gift, RefreshCw, Wallet, Link2 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -431,6 +432,8 @@ onUnmounted(() => {
           <RefreshCw class="h-4 w-4 mr-2" :class="refreshLoading ? 'animate-spin' : ''" />
           {{ t('common.refresh') }}
         </Button>
+
+        <LanguageSwitch />
       </div>
     </Teleport>
 
