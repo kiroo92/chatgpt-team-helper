@@ -4,7 +4,7 @@ import { configService, type AppRuntimeConfig } from '@/services/api'
 import type { Channel } from '@/services/api'
 
 const DEFAULT_TIMEZONE = 'Asia/Shanghai'
-const DEFAULT_LOCALE = 'zh-CN'
+const DEFAULT_LOCALE = 'en-US'
 const DEFAULT_OPEN_ACCOUNTS_MAINTENANCE_MESSAGE = '平台维护中'
 const FALLBACK_TURNSTILE_SITE_KEY = (import.meta.env.VITE_TURNSTILE_SITE_KEY || '').trim()
 

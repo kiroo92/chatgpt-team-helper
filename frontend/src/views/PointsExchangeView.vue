@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { authService, userService, type PointsLedgerRecord, type PointsWithdrawRecord } from '@/services/api'
+import { useI18n } from '@/composables/useI18n'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -18,6 +19,7 @@ import { Coins, Gift, RefreshCw, Wallet, Link2 } from 'lucide-vue-next'
 
 const router = useRouter()
 const { success: showSuccessToast, error: showErrorToast } = useToast()
+const { t } = useI18n()
 
 const teleportReady = ref(false)
 
@@ -97,17 +99,17 @@ const getLedgerLabel = (item: PointsLedgerRecord) => {
   if (item.remark) return item.remark
   switch (item.action) {
     case 'purchase_invite_reward':
-      return '邀请奖励'
+      return t('pointsExchange.ledger.actions.inviteReward')
     case 'purchase_buyer_reward':
-      return '购买奖励'
+      return t('pointsExchange.ledger.actions.buyerReward')
     case 'redeem_invite_unlock':
-      return '开通邀请权限'
+      return t('pointsExchange.ledger.actions.inviteUnlock')
     case 'redeem_team_seat':
-      return '兑换 ChatGPT Team 名额'
+      return t('pointsExchange.ledger.actions.teamSeat')
     case 'withdraw_request':
-      return '提现申请'
+      return t('pointsExchange.ledger.actions.withdraw')
     default:
-      return item.action || '积分变更'
+      return item.action || t('pointsExchange.ledger.actions.default')
   }
 }
 
@@ -127,7 +129,7 @@ const loadPointsMeta = async () => {
     const maxPerRequest = result.withdraw?.maxPointsPerRequest
     withdrawMaxPointsPerRequest.value = maxPerRequest != null ? Number(maxPerRequest) : null
   } catch (err: any) {
-    showErrorToast(err.response?.data?.error || '加载积分兑换信息失败')
+    showErrorToast(err.response?.data?.error || t('errors.loadFailed'))
   } finally {
     pointsMetaLoading.value = false
   }
@@ -139,7 +141,7 @@ const loadWithdrawals = async () => {
     const result = await userService.listWithdrawals(20)
     withdrawals.value = Array.isArray(result.withdrawals) ? result.withdrawals : []
   } catch (err: any) {
-    showErrorToast(err.response?.data?.error || '加载提现记录失败')
+    showErrorToast(err.response?.data?.error || t('errors.loadFailed'))
   } finally {
     withdrawalsLoading.value = false
   }
@@ -153,7 +155,7 @@ const loadLedger = async () => {
     ledgerHasMore.value = Boolean(result.page?.hasMore)
     ledgerNextBeforeId.value = result.page?.nextBeforeId ?? null
   } catch (err: any) {
-    showErrorToast(err.response?.data?.error || '加载积分明细失败')
+    showErrorToast(err.response?.data?.error || t('errors.loadFailed'))
   } finally {
     ledgerLoading.value = false
   }
@@ -188,9 +190,9 @@ const refreshAll = async () => {
 }
 
 const inviteUnlockButtonLabel = computed(() => {
-  if (inviteUnlocking.value) return '兑换中...'
-  if (points.value < inviteUnlockCostPoints.value) return '积分不足'
-  return '立即兑换'
+  if (inviteUnlocking.value) return t('pointsExchange.inviteUnlock.buttonLabelRedeeming')
+  if (points.value < inviteUnlockCostPoints.value) return t('pointsExchange.inviteUnlock.buttonLabelInsufficient')
+  return t('pointsExchange.inviteUnlock.buttonLabel')
 })
 
 const canRedeemInviteUnlock = computed(() => {
@@ -217,11 +219,11 @@ const canRedeemTeamSeat = computed(() => {
 })
 
 const teamSeatButtonLabel = computed(() => {
-  if (redeemingTeamSeat.value) return '兑换中...'
+  if (redeemingTeamSeat.value) return t('pointsExchange.teamSeat.buttonLabelRedeeming')
   const count = parsedEmails.value.length
-  if (count === 0) return '请输入邮箱'
-  if (points.value < teamSeatTotalCost.value) return '积分不足'
-  return `兑换 ${count} 个名额（${teamSeatTotalCost.value} 积分）`
+  if (count === 0) return t('pointsExchange.teamSeat.buttonLabelNoEmail')
+  if (points.value < teamSeatTotalCost.value) return t('pointsExchange.teamSeat.buttonLabelInsufficient')
+  return t('pointsExchange.teamSeat.buttonLabel', { count, cost: teamSeatTotalCost.value })
 })
 
 const redeemInviteUnlock = async () => {
@@ -229,7 +231,7 @@ const redeemInviteUnlock = async () => {
   if (hasInviteAbility.value) return
 
   if (!canRedeemInviteUnlock.value) {
-    inviteUnlockError.value = `积分不足（需要 ${inviteUnlockCostPoints.value} 积分）`
+    inviteUnlockError.value = t('errors.insufficientPoints', { required: inviteUnlockCostPoints.value })
     showErrorToast(inviteUnlockError.value)
     return
   }
@@ -240,7 +242,7 @@ const redeemInviteUnlock = async () => {
     points.value = Number(result.points || 0)
     inviteUnlockCostPoints.value = Number(result.invite?.costPoints || inviteUnlockCostPoints.value)
 
-    showSuccessToast(result.message || '邀请权限已开通')
+    showSuccessToast(result.message || t('common.success'))
     await resetLedgerPagination()
 
     try {
@@ -251,7 +253,7 @@ const redeemInviteUnlock = async () => {
       console.warn('Refresh current user after invite unlock failed:', refreshError)
     }
   } catch (err: any) {
-    inviteUnlockError.value = err.response?.data?.error || '兑换失败'
+    inviteUnlockError.value = err.response?.data?.error || t('common.failed')
     showErrorToast(inviteUnlockError.value)
   } finally {
     inviteUnlocking.value = false
@@ -264,13 +266,13 @@ const redeemTeamSeat = async () => {
 
   const emails = parsedEmails.value
   if (emails.length === 0) {
-    redeemTeamSeatError.value = '请输入有效的邮箱地址'
+    redeemTeamSeatError.value = t('errors.invalidEmail')
     showErrorToast(redeemTeamSeatError.value)
     return
   }
 
   if (!canRedeemTeamSeat.value) {
-    redeemTeamSeatError.value = `积分不足（需要 ${teamSeatTotalCost.value} 积分）`
+    redeemTeamSeatError.value = t('errors.insufficientPoints', { required: teamSeatTotalCost.value })
     showErrorToast(redeemTeamSeatError.value)
     return
   }
@@ -296,11 +298,11 @@ const redeemTeamSeat = async () => {
     }
     redeemTeamSeatResults.value = allResults
 
-    showSuccessToast(result.message || '兑换成功')
+    showSuccessToast(result.message || t('common.success'))
     teamSeatEmails.value = ''
     await resetLedgerPagination()
   } catch (err: any) {
-    redeemTeamSeatError.value = err.response?.data?.error || '兑换失败'
+    redeemTeamSeatError.value = err.response?.data?.error || t('common.failed')
     showErrorToast(redeemTeamSeatError.value)
   } finally {
     redeemingTeamSeat.value = false
@@ -310,39 +312,39 @@ const redeemTeamSeat = async () => {
 const submitWithdraw = async () => {
   withdrawError.value = ''
   if (!withdrawEnabled.value) {
-    withdrawError.value = '提现功能暂未开放'
+    withdrawError.value = t('pointsExchange.withdraw.errors.notOpen')
     showErrorToast(withdrawError.value)
     return
   }
 
   const pointsValue = withdrawPointsValue.value
   if (!Number.isFinite(pointsValue) || pointsValue <= 0) {
-    withdrawError.value = '请输入有效的提现积分'
+    withdrawError.value = t('pointsExchange.withdraw.errors.invalidPoints')
     showErrorToast(withdrawError.value)
     return
   }
   if (pointsValue < withdrawMinPoints.value) {
-    withdrawError.value = `最低提现 ${withdrawMinPoints.value} 积分`
+    withdrawError.value = t('pointsExchange.withdraw.errors.minPoints', { min: withdrawMinPoints.value })
     showErrorToast(withdrawError.value)
     return
   }
   if (withdrawStepPoints.value > 1 && pointsValue % withdrawStepPoints.value !== 0) {
-    withdrawError.value = `提现积分需为 ${withdrawStepPoints.value} 的倍数`
+    withdrawError.value = t('pointsExchange.withdraw.errors.stepPoints', { step: withdrawStepPoints.value })
     showErrorToast(withdrawError.value)
     return
   }
   if (withdrawMaxPointsPerRequest.value && withdrawMaxPointsPerRequest.value > 0 && pointsValue > withdrawMaxPointsPerRequest.value) {
-    withdrawError.value = `单次最多提现 ${withdrawMaxPointsPerRequest.value} 积分`
+    withdrawError.value = t('pointsExchange.withdraw.errors.maxPoints', { max: withdrawMaxPointsPerRequest.value })
     showErrorToast(withdrawError.value)
     return
   }
   if (pointsValue > points.value) {
-    withdrawError.value = '积分不足，无法提现'
+    withdrawError.value = t('pointsExchange.withdraw.errors.insufficientPoints')
     showErrorToast(withdrawError.value)
     return
   }
   if (!withdrawAccount.value.trim()) {
-    withdrawError.value = '请输入收款账号'
+    withdrawError.value = t('pointsExchange.withdraw.errors.noAccount')
     showErrorToast(withdrawError.value)
     return
   }
@@ -355,13 +357,13 @@ const submitWithdraw = async () => {
       payoutAccount: withdrawAccount.value.trim(),
     })
     points.value = Number(result.points || 0)
-    showSuccessToast(result.message || '提现申请已提交')
+    showSuccessToast(result.message || t('pointsExchange.withdraw.success'))
     withdrawPoints.value = ''
     withdrawAccount.value = ''
     await loadWithdrawals()
     await resetLedgerPagination()
   } catch (err: any) {
-    withdrawError.value = err.response?.data?.error || '提现失败'
+    withdrawError.value = err.response?.data?.error || t('common.failed')
     showErrorToast(withdrawError.value)
   } finally {
     withdrawLoading.value = false
@@ -413,10 +415,10 @@ onUnmounted(() => {
       <div class="flex items-center gap-3">
         <TabsList class="bg-gray-100/70 border border-gray-200 rounded-xl p-1">
           <TabsTrigger value="exchange" class="rounded-lg px-4">
-            积分兑换
+            {{ t('pointsExchange.tabs.exchange') }}
           </TabsTrigger>
           <TabsTrigger value="ledger" class="rounded-lg px-4">
-            变更明细
+            {{ t('pointsExchange.tabs.ledger') }}
           </TabsTrigger>
         </TabsList>
 
@@ -427,16 +429,16 @@ onUnmounted(() => {
           @click="refreshAll"
         >
           <RefreshCw class="h-4 w-4 mr-2" :class="refreshLoading ? 'animate-spin' : ''" />
-          刷新
+          {{ t('common.refresh') }}
         </Button>
       </div>
     </Teleport>
 
     <Card class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
       <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-8 py-6">
-        <CardTitle class="text-xl font-bold text-gray-900">可用积分</CardTitle>
+        <CardTitle class="text-xl font-bold text-gray-900">{{ t('pointsExchange.availablePoints') }}</CardTitle>
         <CardDescription class="text-gray-500">
-          兑换名额或提交提现申请（兑换会向填写的邮箱发送邀请）。
+          {{ t('pointsExchange.availablePointsDesc') }}
         </CardDescription>
       </CardHeader>
       <CardContent class="p-8">
@@ -446,7 +448,7 @@ onUnmounted(() => {
               <Coins class="w-6 h-6" />
             </div>
             <div>
-              <div class="text-sm font-semibold text-gray-900">当前积分</div>
+              <div class="text-sm font-semibold text-gray-900">{{ t('pointsExchange.currentPoints') }}</div>
               <div class="text-xs text-gray-500">
                 {{ currentUser?.email || '-' }}
               </div>
@@ -468,14 +470,14 @@ onUnmounted(() => {
                 <Link2 class="w-5 h-5" />
               </div>
               <div>
-                <CardTitle class="text-xl font-bold text-gray-900">开通邀请权限</CardTitle>
-                <CardDescription class="text-gray-500">仅可兑换一次 · {{ inviteUnlockCostPoints }} 积分</CardDescription>
+                <CardTitle class="text-xl font-bold text-gray-900">{{ t('pointsExchange.inviteUnlock.title') }}</CardTitle>
+                <CardDescription class="text-gray-500">{{ t('pointsExchange.inviteUnlock.desc', { cost: inviteUnlockCostPoints }) }}</CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent class="p-8 space-y-6">
             <div class="rounded-2xl border border-gray-100 bg-gray-50/40 px-5 py-4 text-sm text-gray-600">
-              开通后可在「用户信息」页面查看邀请数据并生成邀请链接。
+              {{ t('pointsExchange.inviteUnlock.hint') }}
             </div>
 
             <div v-if="inviteUnlockError" class="text-sm text-red-600">
@@ -499,22 +501,22 @@ onUnmounted(() => {
                 <Gift class="w-5 h-5" />
               </div>
               <div>
-                <CardTitle class="text-xl font-bold text-gray-900">兑换 ChatGPT Team 名额</CardTitle>
-                <CardDescription class="text-gray-500">30 天 · {{ teamSeatCostPoints }} 积分/个 · 支持批量</CardDescription>
+                <CardTitle class="text-xl font-bold text-gray-900">{{ t('pointsExchange.teamSeat.title') }}</CardTitle>
+                <CardDescription class="text-gray-500">{{ t('pointsExchange.teamSeat.desc', { cost: teamSeatCostPoints }) }}</CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent class="p-8 space-y-6">
             <div class="space-y-2">
-              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">接收邀请邮箱</Label>
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">{{ t('pointsExchange.teamSeat.emailLabel') }}</Label>
               <textarea
                 v-model="teamSeatEmails"
                 class="w-full h-24 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-100 focus:border-blue-500 resize-none"
-                placeholder="输入邮箱地址，多个邮箱用逗号或换行分隔..."
+                :placeholder="t('pointsExchange.teamSeat.emailPlaceholder')"
                 :disabled="redeemingTeamSeat"
               />
               <div class="text-xs text-gray-500">
-                已识别 {{ parsedEmails.length }} 个邮箱，需消耗 {{ teamSeatTotalCost }} 积分。可用名额：{{ teamSeatRemaining }}
+                {{ t('pointsExchange.teamSeat.emailsIdentified', { count: parsedEmails.length, cost: teamSeatTotalCost, remaining: teamSeatRemaining }) }}
               </div>
             </div>
 
@@ -523,7 +525,7 @@ onUnmounted(() => {
             </div>
 
             <div v-if="redeemTeamSeatResults.length > 0" class="space-y-2">
-              <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider">兑换结果</div>
+              <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider">{{ t('pointsExchange.teamSeat.redeemResult') }}</div>
               <div class="max-h-32 overflow-y-auto space-y-1">
                 <div
                   v-for="(r, idx) in redeemTeamSeatResults"
@@ -532,7 +534,7 @@ onUnmounted(() => {
                   :class="r.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'"
                 >
                   <span>{{ r.email }}</span>
-                  <span>{{ r.success ? '成功' : r.error }}</span>
+                  <span>{{ r.success ? t('pointsExchange.teamSeat.redeemSuccess') : r.error }}</span>
                 </div>
               </div>
             </div>
@@ -554,28 +556,28 @@ onUnmounted(() => {
                 <Wallet class="w-5 h-5" />
               </div>
               <div>
-                <CardTitle class="text-xl font-bold text-gray-900">提现</CardTitle>
-                <CardDescription class="text-gray-500">提交申请后人工处理</CardDescription>
+                <CardTitle class="text-xl font-bold text-gray-900">{{ t('pointsExchange.withdraw.title') }}</CardTitle>
+                <CardDescription class="text-gray-500">{{ t('pointsExchange.withdraw.desc') }}</CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent class="p-8 space-y-6">
             <div class="grid gap-5">
               <div class="space-y-2">
-                <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">提现积分</Label>
+                <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">{{ t('pointsExchange.withdraw.pointsLabel') }}</Label>
                 <Input
                   v-model="withdrawPoints"
                   class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500"
-                  placeholder="例如：10"
+                  :placeholder="t('pointsExchange.withdraw.pointsPlaceholder')"
                   :disabled="withdrawLoading || !withdrawEnabled"
                 />
                 <div class="text-xs text-gray-500">
-                  返现规则：{{ withdrawRatePoints }} 积分 = {{ (withdrawRateCashCents / 100).toFixed(2) }} 元，预计返现 {{ withdrawCashAmount }} 元
+                  {{ t('pointsExchange.withdraw.rateHint', { points: withdrawRatePoints, cash: (withdrawRateCashCents / 100).toFixed(2), amount: withdrawCashAmount }) }}
                 </div>
               </div>
 
               <div class="space-y-2">
-                <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">收款方式</Label>
+                <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">{{ t('pointsExchange.withdraw.methodLabel') }}</Label>
                 <div class="grid grid-cols-2 gap-3">
                   <button
                     type="button"
@@ -586,7 +588,7 @@ onUnmounted(() => {
                     :disabled="withdrawLoading || !withdrawEnabled"
                     @click="withdrawMethod = 'alipay'"
                   >
-                    支付宝
+                    {{ t('pointsExchange.withdraw.alipay') }}
                   </button>
                   <button
                     type="button"
@@ -597,17 +599,17 @@ onUnmounted(() => {
                     :disabled="withdrawLoading || !withdrawEnabled"
                     @click="withdrawMethod = 'wechat'"
                   >
-                    微信
+                    {{ t('pointsExchange.withdraw.wechat') }}
                   </button>
                 </div>
               </div>
 
               <div class="space-y-2">
-                <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">收款账号</Label>
+                <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">{{ t('pointsExchange.withdraw.accountLabel') }}</Label>
                 <Input
                   v-model="withdrawAccount"
                   class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500"
-                  placeholder="支付宝账号 / 微信号"
+                  :placeholder="t('pointsExchange.withdraw.accountPlaceholder')"
                   :disabled="withdrawLoading || !withdrawEnabled"
                   @keydown.enter.prevent="submitWithdraw"
                 />
@@ -622,18 +624,18 @@ onUnmounted(() => {
                 :disabled="withdrawLoading || !withdrawEnabled"
                 @click="submitWithdraw"
               >
-                {{ withdrawLoading ? '提交中...' : (withdrawEnabled ? '提交提现申请' : '未开放') }}
+                {{ withdrawLoading ? t('pointsExchange.withdraw.submitting') : (withdrawEnabled ? t('pointsExchange.withdraw.submitButton') : t('pointsExchange.withdraw.notOpen')) }}
               </Button>
             </div>
 
             <div class="pt-4 border-t border-gray-100 space-y-3">
-              <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider">最近提现</div>
+              <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider">{{ t('pointsExchange.withdraw.recentWithdrawals') }}</div>
 
               <div v-if="withdrawalsLoading" class="text-sm text-gray-500">
-                加载中…
+                {{ t('common.loading') }}
               </div>
               <div v-else-if="withdrawals.length === 0" class="text-sm text-gray-500">
-                暂无提现记录
+                {{ t('pointsExchange.withdraw.noWithdrawals') }}
               </div>
               <div v-else class="space-y-2">
                 <div
@@ -642,12 +644,12 @@ onUnmounted(() => {
                   class="flex items-center justify-between rounded-xl border border-gray-100 bg-gray-50/30 px-4 py-3"
                 >
                   <div class="min-w-0">
-                    <div class="text-sm font-semibold text-gray-900">-{{ item.points }} 积分</div>
+                    <div class="text-sm font-semibold text-gray-900">-{{ item.points }} {{ t('pointsExchange.withdraw.pointsUnit') }}</div>
                     <div v-if="item.cashAmount" class="text-xs text-gray-500">
-                      返现 {{ item.cashAmount }} 元
+                      {{ t('pointsExchange.withdraw.cashback', { amount: item.cashAmount }) }}
                     </div>
                     <div class="text-xs text-gray-500 truncate">
-                      {{ item.method === 'alipay' ? '支付宝' : (item.method === 'wechat' ? '微信' : item.method) }} · {{ item.payoutAccount }}
+                      {{ item.method === 'alipay' ? t('pointsExchange.withdraw.alipay') : (item.method === 'wechat' ? t('pointsExchange.withdraw.wechat') : item.method) }} · {{ item.payoutAccount }}
                     </div>
                   </div>
                   <div class="text-xs font-semibold text-gray-600">
@@ -670,8 +672,8 @@ onUnmounted(() => {
                 <Coins class="w-5 h-5" />
               </div>
               <div>
-                <CardTitle class="text-xl font-bold text-gray-900">积分变更明细</CardTitle>
-                <CardDescription class="text-gray-500">第 {{ ledgerPage }} 页</CardDescription>
+                <CardTitle class="text-xl font-bold text-gray-900">{{ t('pointsExchange.ledger.title') }}</CardTitle>
+                <CardDescription class="text-gray-500">{{ t('pointsExchange.ledger.pageNumber', { page: ledgerPage }) }}</CardDescription>
               </div>
             </div>
 
@@ -682,7 +684,7 @@ onUnmounted(() => {
                 :disabled="ledgerLoading || ledgerBeforeIdStack.length === 0"
                 @click="goLedgerPrevPage"
               >
-                上一页
+                {{ t('common.previous') }}
               </Button>
               <Button
                 variant="outline"
@@ -690,26 +692,26 @@ onUnmounted(() => {
                 :disabled="ledgerLoading || !ledgerHasMore"
                 @click="goLedgerNextPage"
               >
-                下一页
+                {{ t('common.next') }}
               </Button>
             </div>
           </div>
         </CardHeader>
         <CardContent class="p-8">
           <div v-if="ledgerLoading" class="text-sm text-gray-500">
-            加载中…
+            {{ t('common.loading') }}
           </div>
           <div v-else-if="ledger.length === 0" class="text-sm text-gray-500">
-            暂无积分变更记录
+            {{ t('pointsExchange.ledger.noRecords') }}
           </div>
           <div v-else class="overflow-x-auto">
             <table class="min-w-full text-sm">
               <thead>
                 <tr class="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  <th class="py-3 text-left">时间</th>
-                  <th class="py-3 text-right">变更</th>
-                  <th class="py-3 text-right">余额</th>
-                  <th class="py-3 text-left">说明</th>
+                  <th class="py-3 text-left">{{ t('pointsExchange.ledger.time') }}</th>
+                  <th class="py-3 text-right">{{ t('pointsExchange.ledger.change') }}</th>
+                  <th class="py-3 text-right">{{ t('pointsExchange.ledger.balance') }}</th>
+                  <th class="py-3 text-left">{{ t('pointsExchange.ledger.description') }}</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-100">
