@@ -162,8 +162,8 @@ export const userService = {
     return response.data
   },
 
-  async listPointsLedger(limit: number = 20, beforeId?: number): Promise<PointsLedgerResponse> {
-    const response = await api.get('/user/points/ledger', { params: { limit, ...(beforeId ? { beforeId } : {}) } })
+  async listPointsLedger(limit: number = 20, beforeId?: number, withDetails?: boolean): Promise<PointsLedgerResponse> {
+    const response = await api.get('/user/points/ledger', { params: { limit, ...(beforeId ? { beforeId } : {}), ...(withDetails ? { withDetails: 'true' } : {}) } })
     return response.data
   },
 
@@ -297,6 +297,16 @@ export interface PointsWithdrawRequestResponse {
   withdrawal: PointsWithdrawRecord | null
 }
 
+export interface RedemptionDetail {
+  id: number
+  code?: string | null
+  redeemedBy?: string | null
+  redeemedAt?: string | null
+  accountEmail?: string | null
+  channel?: string | null
+  channelName?: string | null
+}
+
 export interface PointsLedgerRecord {
   id: number
   deltaPoints: number
@@ -307,6 +317,7 @@ export interface PointsLedgerRecord {
   refId?: string | null
   remark?: string | null
   createdAt?: string | null
+  redemptionDetail?: RedemptionDetail | null
 }
 
 export interface PointsLedgerResponse {

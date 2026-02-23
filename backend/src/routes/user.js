@@ -712,7 +712,8 @@ router.get('/points/ledger', authenticateToken, async (req, res) => {
     const db = await getDatabase()
     const limit = Math.min(100, Math.max(1, toInt(req.query.limit, 20)))
     const beforeId = req.query.beforeId != null ? toInt(req.query.beforeId, 0) : null
-    const fetched = listUserPointsLedger(db, { userId, limit: limit + 1, beforeId })
+    const withDetails = req.query.withDetails === 'true' || req.query.withDetails === '1'
+    const fetched = listUserPointsLedger(db, { userId, limit: limit + 1, beforeId, withDetails })
     const hasMore = fetched.length > limit
     const records = hasMore ? fetched.slice(0, limit) : fetched
     const nextBeforeId = hasMore && records.length ? records[records.length - 1].id : null

@@ -63,7 +63,7 @@ export const safeInsertPointsLedgerEntry = (
   }
 }
 
-export const listUserPointsLedger = (db, { userId, limit = 20, beforeId } = {}) => {
+export const listUserPointsLedger = (db, { userId, limit = 20, beforeId, withDetails = false } = {}) => {
   if (!db) return []
   const normalizedUserId = toInt(userId, 0)
   if (!normalizedUserId) return []
@@ -91,7 +91,7 @@ export const listUserPointsLedger = (db, { userId, limit = 20, beforeId } = {}) 
   )
 
   const rows = result[0]?.values || []
-  return rows.map(row => ({
+  const records = rows.map(row => ({
     id: Number(row[0] || 0),
     deltaPoints: Number(row[1] || 0),
     pointsBefore: Number(row[2] || 0),
@@ -102,5 +102,50 @@ export const listUserPointsLedger = (db, { userId, limit = 20, beforeId } = {}) 
     remark: row[7] ? String(row[7]) : null,
     createdAt: row[8] ? String(row[8]) : null,
   }))
+
+  // 如果需要详情，关联查询 redemption_codes 表
+  if (withDetails) {
+    const redemptionCodeIds = records
+      .filter(r => r.refType === 'redemption_code' && r.refId)
+      .map(r => r.refId)
+
+    if (redemptionCodeIds.length > 0) {
+      const placeholders = redemptionCodeIds.map(() => '?').join(',')
+      const codesResult = db.exec(
+        `
+          SELECT id, code, redeemed_by, redeemed_at, account_email, channel, channel_name
+          FROM redemption_codes
+          WHERE id IN (${placeholders})
+        `,
+        redemptionCodeIds
+      )
+
+      const codesMap = new Map()
+      const codeRows = codesResult[0]?.values || []
+      for (const row of codeRows) {
+        const codeId = String(row[0] || '')
+        codesMap.set(codeId, {
+          id: Number(row[0] || 0),
+          code: row[1] ? String(row[1]) : null,
+          redeemedBy: row[2] ? String(row[2]) : null,
+          redeemedAt: row[3] ? String(row[3]) : null,
+          accountEmail: row[4] ? String(row[4]) : null,
+          channel: row[5] ? String(row[5]) : null,
+          channelName: row[6] ? String(row[6]) : null,
+        })
+      }
+
+      for (const record of records) {
+        if (record.refType === 'redemption_code' && record.refId) {
+          const codeDetail = codesMap.get(record.refId)
+          if (codeDetail) {
+            record.redemptionDetail = codeDetail
+          }
+        }
+      }
+    }
+  }
+
+  return records
 }
 

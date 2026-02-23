@@ -120,7 +120,7 @@ const loadRedemptionRecords = async () => {
   redemptionLoading.value = true
   redemptionError.value = ''
   try {
-    const response = await userService.listPointsLedger(100)
+    const response = await userService.listPointsLedger(100, undefined, true)
     // 只筛选兑换相关的记录
     redemptionRecords.value = (response.records || []).filter(
       (r) => r.action === 'redeem_team_seat' || r.action === 'redeem_invite_unlock'
@@ -413,6 +413,8 @@ onUnmounted(() => {
           <thead>
             <tr class="text-left text-gray-500 border-b">
               <th class="py-3 pr-4 font-medium">兑换类型</th>
+              <th class="py-3 pr-4 font-medium">接收邮箱</th>
+              <th class="py-3 pr-4 font-medium">所属账号</th>
               <th class="py-3 pr-4 font-medium">消耗积分</th>
               <th class="py-3 pr-4 font-medium">兑换时间</th>
             </tr>
@@ -420,6 +422,8 @@ onUnmounted(() => {
           <tbody>
             <tr v-for="record in redemptionRecords" :key="record.id" class="border-b last:border-b-0 hover:bg-gray-50/60">
               <td class="py-3 pr-4 text-gray-900">{{ getRedemptionLabel(record) }}</td>
+              <td class="py-3 pr-4 text-gray-900">{{ record.redemptionDetail?.redeemedBy || '-' }}</td>
+              <td class="py-3 pr-4 text-gray-600 text-xs">{{ record.redemptionDetail?.accountEmail || '-' }}</td>
               <td class="py-3 pr-4 tabular-nums text-amber-600 font-medium">-{{ Math.abs(record.deltaPoints || 0) }}</td>
               <td class="py-3 pr-4 text-gray-600 whitespace-nowrap">{{ formatDate(record.createdAt) }}</td>
             </tr>
