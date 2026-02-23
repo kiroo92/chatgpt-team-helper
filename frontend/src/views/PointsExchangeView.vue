@@ -14,7 +14,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { useToast } from '@/components/ui/toast'
-import { Coins, Gift, RefreshCw, Wallet, Link2 } from 'lucide-vue-next'
+import { Coins, RefreshCw, Wallet, Link2 } from 'lucide-vue-next'
 
 const router = useRouter()
 const { success: showSuccessToast, error: showErrorToast } = useToast()
@@ -30,22 +30,12 @@ const syncCurrentUser = () => {
 
 const points = ref(0)
 const pointsMetaLoading = ref(false)
-const teamSeatCostPoints = ref(15)
-const teamSeatRemaining = ref(0)
 const withdrawEnabled = ref(true)
-
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const teamSeatEmail = ref('')
-const normalizedTeamSeatEmail = computed(() => teamSeatEmail.value.trim())
-const isTeamSeatEmailValid = computed(() => EMAIL_REGEX.test(normalizedTeamSeatEmail.value))
 
 const inviteUnlockCostPoints = ref(15)
 const inviteUnlocking = ref(false)
 const inviteUnlockError = ref('')
 const hasInviteAbility = computed(() => Boolean(currentUser.value?.inviteEnabled))
-
-const redeemingTeamSeat = ref(false)
-const redeemTeamSeatError = ref('')
 
 const withdrawPoints = ref('')
 const withdrawMethod = ref<'alipay' | 'wechat'>('alipay')
@@ -113,29 +103,11 @@ const getLedgerLabel = (item: PointsLedgerRecord) => {
   }
 }
 
-const seatButtonLabel = computed(() => {
-  if (redeemingTeamSeat.value) return '兑换中...'
-  if (teamSeatRemaining.value <= 0) return '今日已兑完'
-  if (points.value < teamSeatCostPoints.value) return '积分不足'
-  if (!isTeamSeatEmailValid.value) return '请输入邮箱'
-  return '立即兑换'
-})
-
-const canRedeemSeat = computed(() => {
-  if (redeemingTeamSeat.value) return false
-  if (teamSeatRemaining.value <= 0) return false
-  if (points.value < teamSeatCostPoints.value) return false
-  if (!isTeamSeatEmailValid.value) return false
-  return true
-})
-
 const loadPointsMeta = async () => {
   pointsMetaLoading.value = true
   try {
     const result = await userService.getPointsMeta()
     points.value = Number(result.points || 0)
-    teamSeatCostPoints.value = Number(result.seat?.costPoints || 15)
-    teamSeatRemaining.value = Number(result.seat?.remaining || 0)
     withdrawEnabled.value = Boolean(result.withdraw?.enabled)
 
     withdrawRatePoints.value = Number(result.withdraw?.rate?.points || 10)
@@ -248,45 +220,6 @@ const redeemInviteUnlock = async () => {
     showErrorToast(inviteUnlockError.value)
   } finally {
     inviteUnlocking.value = false
-  }
-}
-
-const redeemTeamSeat = async () => {
-  redeemTeamSeatError.value = ''
-  const email = normalizedTeamSeatEmail.value
-  if (!EMAIL_REGEX.test(email)) {
-    redeemTeamSeatError.value = '请输入有效的邮箱地址'
-    showErrorToast(redeemTeamSeatError.value)
-    return
-  }
-
-  if (!canRedeemSeat.value) {
-    if (points.value < teamSeatCostPoints.value) {
-      redeemTeamSeatError.value = `积分不足（需要 ${teamSeatCostPoints.value} 积分）`
-    } else if (teamSeatRemaining.value <= 0) {
-      redeemTeamSeatError.value = '今日可兑换名额不足'
-    } else {
-      redeemTeamSeatError.value = '暂时无法兑换'
-    }
-    showErrorToast(redeemTeamSeatError.value)
-    return
-  }
-
-  redeemingTeamSeat.value = true
-  try {
-    const result = await userService.redeemTeamSeat({ email })
-    points.value = Number(result.points || 0)
-    teamSeatCostPoints.value = Number(result.seat?.costPoints || teamSeatCostPoints.value)
-    teamSeatRemaining.value = Number(result.seat?.remaining || 0)
-
-    const inviteStatus = String(result.redemption?.data?.inviteStatus || '').trim()
-    showSuccessToast(inviteStatus ? `兑换成功：${inviteStatus}` : (result.message || '兑换成功'))
-    await resetLedgerPagination()
-  } catch (err: any) {
-    redeemTeamSeatError.value = err.response?.data?.error || '兑换失败'
-    showErrorToast(redeemTeamSeatError.value)
-  } finally {
-    redeemingTeamSeat.value = false
   }
 }
 
@@ -474,57 +407,6 @@ onUnmounted(() => {
               @click="redeemInviteUnlock"
             >
               {{ inviteUnlockButtonLabel }}
-            </Button>
-          </CardContent>
-        </Card>
-
-	        <Card class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
-	          <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-8 py-6">
-	            <div class="flex items-center gap-3">
-	              <div class="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
-	                <Gift class="w-5 h-5" />
-	              </div>
-	              <div>
-		                <CardTitle class="text-xl font-bold text-gray-900">兑换 ChatGPT Team 名额</CardTitle>
-	                <CardDescription class="text-gray-500">30 天 · {{ teamSeatCostPoints }} 积分</CardDescription>
-	              </div>
-	            </div>
-		          </CardHeader>
-		          <CardContent class="p-8 space-y-6">
-		            <div class="space-y-2">
-		              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">接收邀请邮箱</Label>
-		              <Input
-		                v-model="teamSeatEmail"
-                type="email"
-                class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500"
-                placeholder="输入邮箱地址..."
-                :disabled="redeemingTeamSeat"
-                @keydown.enter.prevent="redeemTeamSeat"
-              />
-              <div class="text-xs text-gray-500">
-                邀请将发送至该邮箱。
-              </div>
-	            </div>
-	
-	            <div class="flex items-center justify-between rounded-2xl border border-gray-100 bg-gray-50/40 px-5 py-4">
-	              <div>
-	                <div class="text-sm font-semibold text-gray-900">今日剩余名额</div>
-	              </div>
-	              <div class="text-2xl font-bold text-gray-900 tabular-nums">
-	                {{ teamSeatRemaining }}
-	              </div>
-	            </div>
-
-            <div v-if="redeemTeamSeatError" class="text-sm text-red-600">
-              {{ redeemTeamSeatError }}
-            </div>
-
-            <Button
-              class="h-11 rounded-xl bg-black hover:bg-gray-800 text-white w-full"
-              :disabled="!canRedeemSeat"
-              @click="redeemTeamSeat"
-            >
-              {{ seatButtonLabel }}
             </Button>
           </CardContent>
         </Card>

@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { authService, purchaseService, type PurchaseOrder, type PurchaseMyOrdersParams } from '@/services/api'
+import { authService, purchaseService, userService, type PurchaseOrder, type PurchaseMyOrdersParams, type PointsLedgerRecord } from '@/services/api'
 import { formatShanghaiDate } from '@/lib/datetime'
 import { useAppConfigStore } from '@/stores/appConfig'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useToast } from '@/components/ui/toast'
-import { Link2, RefreshCw, ShoppingCart, CheckCircle2, Clock, RotateCcw, Ban, AlertCircle } from 'lucide-vue-next'
+import { Link2, RefreshCw, ShoppingCart, CheckCircle2, Clock, RotateCcw, Ban, AlertCircle, Coins } from 'lucide-vue-next'
 
 const router = useRouter()
 const appConfigStore = useAppConfigStore()
@@ -23,6 +23,11 @@ const totalPages = computed(() => Math.max(1, Math.ceil(paginationMeta.value.tot
 
 const bindOrderNo = ref('')
 const binding = ref(false)
+
+// 积分兑换记录
+const redemptionRecords = ref<PointsLedgerRecord[]>([])
+const redemptionLoading = ref(false)
+const redemptionError = ref('')
 
 const dateFormatOptions = computed(() => ({
   timeZone: appConfigStore.timezone,
@@ -61,6 +66,24 @@ const stats = computed(() => {
   return { total, paid, refunded, pending }
 })
 
+const redemptionStats = computed(() => {
+  const total = redemptionRecords.value.length
+  const totalPoints = redemptionRecords.value.reduce((sum, r) => sum + Math.abs(r.deltaPoints || 0), 0)
+  return { total, totalPoints }
+})
+
+const getRedemptionLabel = (item: PointsLedgerRecord) => {
+  if (item.remark) return item.remark
+  switch (item.action) {
+    case 'redeem_team_seat':
+      return '兑换 ChatGPT Team 名额'
+    case 'redeem_invite_unlock':
+      return '开通邀请权限'
+    default:
+      return item.action || '积分兑换'
+  }
+}
+
 const buildParams = (): PurchaseMyOrdersParams => ({
   page: paginationMeta.value.page,
   pageSize: paginationMeta.value.pageSize,
@@ -91,6 +114,29 @@ const goToPage = (page: number) => {
   if (page < 1 || page > totalPages.value || page === paginationMeta.value.page) return
   paginationMeta.value.page = page
   loadOrders()
+}
+
+const loadRedemptionRecords = async () => {
+  redemptionLoading.value = true
+  redemptionError.value = ''
+  try {
+    const response = await userService.listPointsLedger(100)
+    // 只筛选兑换相关的记录
+    redemptionRecords.value = (response.records || []).filter(
+      (r) => r.action === 'redeem_team_seat' || r.action === 'redeem_invite_unlock'
+    )
+  } catch (err: any) {
+    if (err?.response?.status === 401 || err?.response?.status === 403) {
+      authService.logout()
+      router.push('/login')
+      return
+    }
+    const message = err?.response?.data?.error || '加载积分兑换记录失败'
+    redemptionError.value = message
+    showErrorToast(message)
+  } finally {
+    redemptionLoading.value = false
+  }
 }
 
 const bindOrder = async () => {
@@ -136,7 +182,7 @@ onMounted(async () => {
     router.push('/login')
     return
   }
-  await loadOrders()
+  await Promise.all([loadOrders(), loadRedemptionRecords()])
 })
 
 onUnmounted(() => {
@@ -315,6 +361,70 @@ onUnmounted(() => {
         >
           下一页
         </Button>
+      </div>
+    </div>
+
+    <!-- 积分兑换记录 -->
+    <div class="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-2xl bg-amber-50 flex items-center justify-center text-amber-600">
+            <Coins class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-lg font-semibold text-gray-900">积分兑换记录</h3>
+            <p class="text-sm text-gray-500">共 {{ redemptionStats.total }} 笔，消耗 {{ redemptionStats.totalPoints }} 积分</p>
+          </div>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          class="h-9 rounded-xl"
+          :disabled="redemptionLoading"
+          @click="loadRedemptionRecords"
+        >
+          <RefreshCw class="h-4 w-4 mr-2" :class="redemptionLoading ? 'animate-spin' : ''" />
+          刷新
+        </Button>
+      </div>
+
+      <div v-if="redemptionLoading" class="py-10 text-center text-gray-500">
+        <RefreshCw class="h-5 w-5 inline-block mr-2 animate-spin" />
+        加载中…
+      </div>
+
+      <div v-else-if="redemptionError" class="py-8 rounded-2xl bg-red-50 border border-red-100 px-4">
+        <div class="flex items-start gap-3">
+          <AlertCircle class="h-5 w-5 text-red-500 mt-0.5" />
+          <div>
+            <p class="text-sm font-semibold text-red-700">加载失败</p>
+            <p class="text-sm text-red-600 mt-1">{{ redemptionError }}</p>
+          </div>
+        </div>
+      </div>
+
+      <div v-else-if="redemptionRecords.length === 0" class="py-10 text-center text-gray-500">
+        <Ban class="h-5 w-5 inline-block mr-2" />
+        暂无积分兑换记录
+      </div>
+
+      <div v-else class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="text-left text-gray-500 border-b">
+              <th class="py-3 pr-4 font-medium">兑换类型</th>
+              <th class="py-3 pr-4 font-medium">消耗积分</th>
+              <th class="py-3 pr-4 font-medium">兑换时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="record in redemptionRecords" :key="record.id" class="border-b last:border-b-0 hover:bg-gray-50/60">
+              <td class="py-3 pr-4 text-gray-900">{{ getRedemptionLabel(record) }}</td>
+              <td class="py-3 pr-4 tabular-nums text-amber-600 font-medium">-{{ Math.abs(record.deltaPoints || 0) }}</td>
+              <td class="py-3 pr-4 text-gray-600 whitespace-nowrap">{{ formatDate(record.createdAt) }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
