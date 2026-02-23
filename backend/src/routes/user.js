@@ -163,7 +163,7 @@ router.get('/invite-summary', authenticateToken, async (req, res) => {
   }
 })
 
-const TEAM_SEAT_COST_POINTS = Math.max(1, toInt(process.env.TEAM_SEAT_COST_POINTS, 15))
+const TEAM_SEAT_COST_POINTS = Math.max(1, toInt(process.env.TEAM_SEAT_COST_POINTS, 10))
 const INVITE_UNLOCK_COST_POINTS = Math.max(1, toInt(process.env.INVITE_UNLOCK_COST_POINTS, 15))
 
 const WITHDRAW_MAX_POINTS_PER_REQUEST = Math.max(0, toInt(process.env.WITHDRAW_MAX_POINTS_PER_REQUEST, 500))

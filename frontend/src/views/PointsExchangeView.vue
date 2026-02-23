@@ -43,7 +43,7 @@ const loadPointsMeta = async () => {
   try {
     const result = await userService.getPointsMeta()
     points.value = Number(result.points || 0)
-    teamSeatCostPoints.value = Number(result.seat?.costPoints || 15)
+    teamSeatCostPoints.value = Number(result.seat?.costPoints || 10)
     teamSeatRemaining.value = Number(result.seat?.remaining || 0)
   } catch (err: any) {
     showErrorToast(err.response?.data?.error || t('errors.loadFailed'))
