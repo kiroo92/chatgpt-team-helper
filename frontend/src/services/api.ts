@@ -147,7 +147,7 @@ export const userService = {
     return response.data
   },
 
-  async redeemTeamSeat(payload?: { email?: string; seatType?: TeamSeatType }): Promise<PointsRedeemTeamSeatResponse> {
+  async redeemTeamSeat(payload?: { email?: string; emails?: string[]; seatType?: TeamSeatType }): Promise<PointsRedeemTeamSeatResponse> {
     const response = await api.post('/user/points/redeem/team', payload || {})
     return response.data
   },
@@ -340,7 +340,9 @@ export interface PointsRedeemTeamSeatResponse {
     /** @deprecated 已取消按 seatType 划分名额，仅保留用于接口兼容。 */
     defaultType?: TeamSeatType
   }
-  redemption: any
+  redemption?: any
+  results?: Array<{ email: string; success: boolean; redemption?: any }>
+  errors?: Array<{ email: string; error: string }>
 }
 
 export interface PointsRedeemInviteUnlockResponse {

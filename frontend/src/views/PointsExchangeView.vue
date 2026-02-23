@@ -14,7 +14,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { useToast } from '@/components/ui/toast'
-import { Coins, RefreshCw, Wallet, Link2 } from 'lucide-vue-next'
+import { Coins, Gift, RefreshCw, Wallet, Link2 } from 'lucide-vue-next'
 
 const router = useRouter()
 const { success: showSuccessToast, error: showErrorToast } = useToast()
@@ -31,6 +31,14 @@ const syncCurrentUser = () => {
 const points = ref(0)
 const pointsMetaLoading = ref(false)
 const withdrawEnabled = ref(true)
+
+// 团队名额兑换
+const teamSeatCostPoints = ref(15)
+const teamSeatRemaining = ref(0)
+const teamSeatEmails = ref('')
+const redeemingTeamSeat = ref(false)
+const redeemTeamSeatError = ref('')
+const redeemTeamSeatResults = ref<Array<{ email: string; success: boolean; error?: string }>>([])
 
 const inviteUnlockCostPoints = ref(15)
 const inviteUnlocking = ref(false)
@@ -108,6 +116,8 @@ const loadPointsMeta = async () => {
   try {
     const result = await userService.getPointsMeta()
     points.value = Number(result.points || 0)
+    teamSeatCostPoints.value = Number(result.seat?.costPoints || 15)
+    teamSeatRemaining.value = Number(result.seat?.remaining || 0)
     withdrawEnabled.value = Boolean(result.withdraw?.enabled)
 
     withdrawRatePoints.value = Number(result.withdraw?.rate?.points || 10)
@@ -189,6 +199,31 @@ const canRedeemInviteUnlock = computed(() => {
   return true
 })
 
+// 解析邮箱列表（支持逗号、换行、空格分隔）
+const parsedEmails = computed(() => {
+  return teamSeatEmails.value
+    .split(/[,\n\s]+/)
+    .map(e => e.trim().toLowerCase())
+    .filter(e => e && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+})
+
+const teamSeatTotalCost = computed(() => parsedEmails.value.length * teamSeatCostPoints.value)
+
+const canRedeemTeamSeat = computed(() => {
+  if (redeemingTeamSeat.value) return false
+  if (parsedEmails.value.length === 0) return false
+  if (points.value < teamSeatTotalCost.value) return false
+  return true
+})
+
+const teamSeatButtonLabel = computed(() => {
+  if (redeemingTeamSeat.value) return '兑换中...'
+  const count = parsedEmails.value.length
+  if (count === 0) return '请输入邮箱'
+  if (points.value < teamSeatTotalCost.value) return '积分不足'
+  return `兑换 ${count} 个名额（${teamSeatTotalCost.value} 积分）`
+})
+
 const redeemInviteUnlock = async () => {
   inviteUnlockError.value = ''
   if (hasInviteAbility.value) return
@@ -220,6 +255,55 @@ const redeemInviteUnlock = async () => {
     showErrorToast(inviteUnlockError.value)
   } finally {
     inviteUnlocking.value = false
+  }
+}
+
+const redeemTeamSeat = async () => {
+  redeemTeamSeatError.value = ''
+  redeemTeamSeatResults.value = []
+
+  const emails = parsedEmails.value
+  if (emails.length === 0) {
+    redeemTeamSeatError.value = '请输入有效的邮箱地址'
+    showErrorToast(redeemTeamSeatError.value)
+    return
+  }
+
+  if (!canRedeemTeamSeat.value) {
+    redeemTeamSeatError.value = `积分不足（需要 ${teamSeatTotalCost.value} 积分）`
+    showErrorToast(redeemTeamSeatError.value)
+    return
+  }
+
+  redeemingTeamSeat.value = true
+  try {
+    const result = await userService.redeemTeamSeat({ emails })
+    points.value = Number(result.points || 0)
+    teamSeatCostPoints.value = Number(result.seat?.costPoints || teamSeatCostPoints.value)
+    teamSeatRemaining.value = Number(result.seat?.remaining || 0)
+
+    // 合并成功和失败的结果
+    const allResults: Array<{ email: string; success: boolean; error?: string }> = []
+    if (result.results) {
+      for (const r of result.results) {
+        allResults.push({ email: r.email, success: true })
+      }
+    }
+    if (result.errors) {
+      for (const e of result.errors) {
+        allResults.push({ email: e.email, success: false, error: e.error })
+      }
+    }
+    redeemTeamSeatResults.value = allResults
+
+    showSuccessToast(result.message || '兑换成功')
+    teamSeatEmails.value = ''
+    await resetLedgerPagination()
+  } catch (err: any) {
+    redeemTeamSeatError.value = err.response?.data?.error || '兑换失败'
+    showErrorToast(redeemTeamSeatError.value)
+  } finally {
+    redeemingTeamSeat.value = false
   }
 }
 
@@ -299,9 +383,6 @@ onMounted(async () => {
     const me = await userService.getMe()
     authService.setCurrentUser(me)
     currentUser.value = me
-    if (!teamSeatEmail.value.trim()) {
-      teamSeatEmail.value = String(me?.email || '').trim()
-    }
   } catch (error: any) {
     if (error?.response?.status === 401 || error?.response?.status === 403) {
       authService.logout()
@@ -407,6 +488,61 @@ onUnmounted(() => {
               @click="redeemInviteUnlock"
             >
               {{ inviteUnlockButtonLabel }}
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
+          <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-8 py-6">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                <Gift class="w-5 h-5" />
+              </div>
+              <div>
+                <CardTitle class="text-xl font-bold text-gray-900">兑换 ChatGPT Team 名额</CardTitle>
+                <CardDescription class="text-gray-500">30 天 · {{ teamSeatCostPoints }} 积分/个 · 支持批量</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent class="p-8 space-y-6">
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">接收邀请邮箱</Label>
+              <textarea
+                v-model="teamSeatEmails"
+                class="w-full h-24 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-100 focus:border-blue-500 resize-none"
+                placeholder="输入邮箱地址，多个邮箱用逗号或换行分隔..."
+                :disabled="redeemingTeamSeat"
+              />
+              <div class="text-xs text-gray-500">
+                已识别 {{ parsedEmails.length }} 个邮箱，需消耗 {{ teamSeatTotalCost }} 积分。可用名额：{{ teamSeatRemaining }}
+              </div>
+            </div>
+
+            <div v-if="redeemTeamSeatError" class="text-sm text-red-600">
+              {{ redeemTeamSeatError }}
+            </div>
+
+            <div v-if="redeemTeamSeatResults.length > 0" class="space-y-2">
+              <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider">兑换结果</div>
+              <div class="max-h-32 overflow-y-auto space-y-1">
+                <div
+                  v-for="(r, idx) in redeemTeamSeatResults"
+                  :key="idx"
+                  class="flex items-center justify-between text-xs px-3 py-2 rounded-lg"
+                  :class="r.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'"
+                >
+                  <span>{{ r.email }}</span>
+                  <span>{{ r.success ? '成功' : r.error }}</span>
+                </div>
+              </div>
+            </div>
+
+            <Button
+              class="h-11 rounded-xl bg-black hover:bg-gray-800 text-white w-full"
+              :disabled="!canRedeemTeamSeat"
+              @click="redeemTeamSeat"
+            >
+              {{ teamSeatButtonLabel }}
             </Button>
           </CardContent>
         </Card>

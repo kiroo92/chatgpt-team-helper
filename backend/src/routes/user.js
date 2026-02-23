@@ -229,6 +229,42 @@ const pickTodayCommonCode = (db) => {
   return String(row[0]).trim().toUpperCase()
 }
 
+// 不受日期限制，获取任意可用的兑换码
+const pickAvailableCode = (db) => {
+  const row = db.exec(
+    `
+      SELECT rc.code
+      FROM redemption_codes rc
+      JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
+      WHERE rc.is_redeemed = 0
+        AND (rc.reserved_for_uid IS NULL OR TRIM(rc.reserved_for_uid) = '')
+        AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
+        AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
+      ORDER BY rc.created_at ASC
+      LIMIT 1
+    `
+  )[0]?.values?.[0]
+
+  if (!row?.[0]) return ''
+  return String(row[0]).trim().toUpperCase()
+}
+
+// 获取所有可用兑换码数量（不受日期限制）
+const getAvailableCodeCount = (db) => {
+  const result = db.exec(
+    `
+      SELECT COUNT(*)
+      FROM redemption_codes rc
+      JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
+      WHERE rc.is_redeemed = 0
+        AND (rc.reserved_for_uid IS NULL OR TRIM(rc.reserved_for_uid) = '')
+        AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
+        AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
+    `
+  )
+  return Number(result[0]?.values?.[0]?.[0] || 0)
+}
+
 router.get('/points/meta', authenticateToken, async (req, res) => {
   try {
     const userId = req.user?.id
@@ -243,11 +279,7 @@ router.get('/points/meta', authenticateToken, async (req, res) => {
     }
 
     const points = Number(userResult[0].values[0][0] || 0)
-    const remaining = getTodayCommonCodeCount(db)
-    const remainingByType = {
-      [SEAT_TYPE_UNDEMOTED]: remaining,
-      [SEAT_TYPE_DEMOTED]: 0,
-    }
+    const remaining = getAvailableCodeCount(db)
     const withdrawSettings = await getPointsWithdrawSettings(db)
 
     res.json({
@@ -255,8 +287,6 @@ router.get('/points/meta', authenticateToken, async (req, res) => {
       seat: {
         costPoints: TEAM_SEAT_COST_POINTS,
         remaining,
-        remainingByType,
-        defaultType: SEAT_TYPE_UNDEMOTED,
       },
       withdraw: {
         enabled: true,
@@ -355,7 +385,22 @@ router.post('/points/redeem/team', authenticateToken, async (req, res) => {
     return res.status(401).json({ error: 'Access denied. No user provided.' })
   }
 
+  // 支持单个 email 或批量 emails 数组
   const requestedEmail = String(req.body?.email || '').trim()
+  const requestedEmails = Array.isArray(req.body?.emails) ? req.body.emails : []
+  
+  // 合并所有邮箱，去重去空
+  const allEmails = [...new Set(
+    [requestedEmail, ...requestedEmails]
+      .map(e => String(e || '').trim().toLowerCase())
+      .filter(e => e && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+  )]
+
+  if (allEmails.length === 0) {
+    return res.status(400).json({ error: '请输入有效的邮箱地址' })
+  }
+
+  const totalCost = TEAM_SEAT_COST_POINTS * allEmails.length
 
   try {
     const result = await withLocks([`points:redeem-team`, `points:user:${userId}`], async () => {
@@ -369,68 +414,81 @@ router.post('/points/redeem/team', authenticateToken, async (req, res) => {
         return { ok: false, status: 404, error: 'User not found' }
       }
 
-      const userEmail = String(userRow[0] || '').trim()
-      const points = Number(userRow[1] || 0)
-      const email = requestedEmail || userEmail
+      let currentPoints = Number(userRow[1] || 0)
 
-      if (!email) {
-        return { ok: false, status: 400, error: '请输入邮箱地址' }
+      if (currentPoints < totalCost) {
+        return { ok: false, status: 409, error: `积分不足（需要 ${totalCost} 积分，当前 ${currentPoints} 积分）` }
       }
 
-      if (points < TEAM_SEAT_COST_POINTS) {
-        return { ok: false, status: 409, error: `积分不足（需要 ${TEAM_SEAT_COST_POINTS} 积分）` }
+      const results = []
+      const errors = []
+
+      for (const email of allEmails) {
+        const code = pickAvailableCode(db)
+        if (!code) {
+          errors.push({ email, error: '无可用兑换码' })
+          continue
+        }
+
+        try {
+          const redemption = await redeemCodeInternal({
+            email,
+            code,
+            channel: 'common',
+            skipCodeFormatValidation: true
+          })
+
+          db.run('UPDATE users SET points = COALESCE(points, 0) - ? WHERE id = ?', [TEAM_SEAT_COST_POINTS, userId])
+          const pointsBefore = currentPoints
+          currentPoints -= TEAM_SEAT_COST_POINTS
+          
+          safeInsertPointsLedgerEntry(db, {
+            userId,
+            deltaPoints: -TEAM_SEAT_COST_POINTS,
+            pointsBefore,
+            pointsAfter: currentPoints,
+            action: 'redeem_team_seat',
+            refType: 'redemption_code',
+            refId: redemption?.metadata?.codeId ?? null,
+            remark: `兑换 ChatGPT Team 名额`
+          })
+
+          results.push({ email, success: true, redemption })
+        } catch (err) {
+          errors.push({ email, error: err?.message || '兑换失败' })
+        }
       }
 
-      const code = pickTodayCommonCode(db)
-      if (!code) {
-        return { ok: false, status: 409, error: '今日可兑换名额不足，请稍后再试' }
-      }
-
-      const redemption = await redeemCodeInternal({
-        email,
-        code,
-        channel: 'common',
-        skipCodeFormatValidation: true
-      })
-
-      db.run('UPDATE users SET points = COALESCE(points, 0) - ? WHERE id = ?', [TEAM_SEAT_COST_POINTS, userId])
-      safeInsertPointsLedgerEntry(db, {
-        userId,
-        deltaPoints: -TEAM_SEAT_COST_POINTS,
-        pointsBefore: points,
-        pointsAfter: points - TEAM_SEAT_COST_POINTS,
-        action: 'redeem_team_seat',
-        refType: 'redemption_code',
-        refId: redemption?.metadata?.codeId ?? null,
-        remark: '兑换 ChatGPT Team 名额'
-      })
       saveDatabase()
 
       const pointsAfterResult = db.exec('SELECT COALESCE(points, 0) FROM users WHERE id = ? LIMIT 1', [userId])
       const pointsAfter = Number(pointsAfterResult[0]?.values?.[0]?.[0] || 0)
 
-      const remaining = getTodayCommonCodeCount(db)
-      const remainingByType = {
-        [SEAT_TYPE_UNDEMOTED]: remaining,
-        [SEAT_TYPE_DEMOTED]: 0,
-      }
-      return { ok: true, redemption, points: pointsAfter, remainingByType }
+      const remaining = getAvailableCodeCount(db)
+      return { ok: true, results, errors, points: pointsAfter, remaining }
     })
 
     if (!result.ok) {
       return res.status(result.status || 400).json({ error: result.error || '兑换失败' })
     }
 
+    const successCount = result.results.length
+    const failCount = result.errors.length
+    let message = `兑换成功 ${successCount} 个`
+    if (failCount > 0) {
+      message += `，失败 ${failCount} 个`
+    }
+
     res.json({
-      message: '兑换成功',
+      message,
       points: result.points,
       seat: {
         costPoints: TEAM_SEAT_COST_POINTS,
-        remaining: result.remainingByType?.[SEAT_TYPE_UNDEMOTED] || 0,
-        remainingByType: result.remainingByType,
-        defaultType: SEAT_TYPE_UNDEMOTED,
+        remaining: result.remaining,
       },
-      redemption: result.redemption
+      results: result.results,
+      errors: result.errors,
+      redemption: result.results[0]?.redemption // 向后兼容单个兑换
     })
   } catch (error) {
     console.error('Redeem team seat error:', error)
