@@ -25,6 +25,7 @@ import { startWaitingRoomAutoBoardingScheduler } from './services/waiting-room-a
 import { startOpenAccountsOvercapacitySweeper } from './services/open-accounts-sweeper.js'
 import { startOrderExpirationSweeper } from './services/order-expiration-sweeper.js'
 import { startCreditOrderActionSweeper } from './services/credit-order-action-sweeper.js'
+import { startTeamStatusSweeper } from './services/team-status-sweeper.js'
 import { startTelegramBot } from './services/telegram-bot.js'
 import { startXianyuLoginRefreshScheduler } from './services/xianyu-login-refresh.js'
 import { startXhsAutoSyncScheduler } from './services/xhs-auto-sync.js'
@@ -105,6 +106,7 @@ initDatabase()
 	    startOpenAccountsOvercapacitySweeper()
 	    startOrderExpirationSweeper()
 	    startCreditOrderActionSweeper()
+      startTeamStatusSweeper()
 	    await startTelegramBot().catch(error => {
 	      console.error('[Telegram Bot] start failed:', error)
 	    })
