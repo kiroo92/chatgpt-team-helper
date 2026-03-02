@@ -188,6 +188,43 @@ const formatCashAmount = (cashCents) => {
   return yuan.toFixed(2)
 }
 
+const pad2 = (value) => String(value).padStart(2, '0')
+const EXPIRE_AT_PARSE_REGEX = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/
+const parseExpireAtToMs = (value) => {
+  const raw = String(value ?? '').trim()
+  if (!raw) return null
+  const match = raw.match(EXPIRE_AT_PARSE_REGEX)
+  if (!match) return null
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const hour = Number(match[4])
+  const minute = Number(match[5])
+  const second = match[6] != null ? Number(match[6]) : 0
+
+  if (![year, month, day, hour, minute, second].every(Number.isFinite)) return null
+  if (month < 1 || month > 12) return null
+  if (day < 1 || day > 31) return null
+  if (hour < 0 || hour > 23) return null
+  if (minute < 0 || minute > 59) return null
+  if (second < 0 || second > 59) return null
+
+  const iso = `${match[1]}-${pad2(month)}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}:${pad2(second)}+08:00`
+  const parsed = Date.parse(iso)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+const isBoundAccountRedeemable = (row, nowMs = Date.now()) => {
+  if (!row) return false
+  const isOpen = Number(row[1] || 0) === 1
+  const isBanned = Number(row[2] || 0) === 1
+  const token = String(row[3] ?? '').trim()
+  const chatgptAccountId = String(row[4] ?? '').trim()
+  const expireAtMs = parseExpireAtToMs(row[5])
+  return isOpen && !isBanned && Boolean(token) && Boolean(chatgptAccountId) && expireAtMs != null && expireAtMs >= nowMs
+}
+
 const SEAT_TYPE_UNDEMOTED = 'undemoted'
 const SEAT_TYPE_DEMOTED = 'demoted'
 
@@ -231,9 +268,14 @@ const pickTodayCommonCode = (db) => {
 
 // 不受日期限制，获取任意可用的兑换码
 const pickAvailableCode = (db) => {
-  const row = db.exec(
+  const rows = db.exec(
     `
-      SELECT rc.code
+      SELECT rc.code,
+             COALESCE(ga.is_open, 0) AS is_open,
+             COALESCE(ga.is_banned, 0) AS is_banned,
+             ga.token,
+             ga.chatgpt_account_id,
+             ga.expire_at
       FROM redemption_codes rc
       JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
       WHERE rc.is_redeemed = 0
@@ -241,19 +283,29 @@ const pickAvailableCode = (db) => {
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
       ORDER BY rc.created_at ASC
-      LIMIT 1
+      LIMIT 200
     `
-  )[0]?.values?.[0]
+  )[0]?.values || []
 
-  if (!row?.[0]) return ''
-  return String(row[0]).trim().toUpperCase()
+  const nowMs = Date.now()
+  for (const row of rows) {
+    if (!row?.[0]) continue
+    if (!isBoundAccountRedeemable(row, nowMs)) continue
+    return String(row[0]).trim().toUpperCase()
+  }
+  return ''
 }
 
 // 获取所有可用兑换码数量（不受日期限制）
 const getAvailableCodeCount = (db) => {
-  const result = db.exec(
+  const rows = db.exec(
     `
-      SELECT COUNT(*)
+      SELECT rc.code,
+             COALESCE(ga.is_open, 0) AS is_open,
+             COALESCE(ga.is_banned, 0) AS is_banned,
+             ga.token,
+             ga.chatgpt_account_id,
+             ga.expire_at
       FROM redemption_codes rc
       JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
       WHERE rc.is_redeemed = 0
@@ -261,8 +313,14 @@ const getAvailableCodeCount = (db) => {
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
     `
-  )
-  return Number(result[0]?.values?.[0]?.[0] || 0)
+  )[0]?.values || []
+
+  const nowMs = Date.now()
+  let count = 0
+  for (const row of rows) {
+    if (isBoundAccountRedeemable(row, nowMs)) count += 1
+  }
+  return count
 }
 
 router.get('/points/meta', authenticateToken, async (req, res) => {
