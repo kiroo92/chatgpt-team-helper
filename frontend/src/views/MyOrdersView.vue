@@ -81,10 +81,10 @@ const redemptionStats = computed(() => {
 })
 
 const getRedemptionStateLabel = (item: PointsRedeemRecord) => {
-  if (item.state === 'recovered') return '已补号'
-  if (item.state === 'failed') return '补号失败'
-  if (item.state === 'banned') return '已封号'
-  return '正常'
+  if (item.state === 'recovered') return t('myOrders.redemption.state.recovered')
+  if (item.state === 'failed') return t('myOrders.redemption.state.failed')
+  if (item.state === 'banned') return t('myOrders.redemption.state.banned')
+  return t('myOrders.redemption.state.normal')
 }
 
 const getRedemptionStateClass = (item: PointsRedeemRecord) => {
@@ -171,10 +171,10 @@ const triggerRecover = async (item: PointsRedeemRecord) => {
   recoveringEmail.value = item.userEmail
   try {
     await redemptionCodeService.recoverAccount({ email: item.userEmail })
-    showSuccessToast(`已为 ${item.userEmail} 触发补号`)
+    showSuccessToast(t('myOrders.redemption.toast.recoverTriggered', { email: item.userEmail }))
     await loadRedemptionRecords()
   } catch (err: any) {
-    const message = err?.response?.data?.message || err?.response?.data?.error || '补号失败'
+    const message = err?.response?.data?.message || err?.response?.data?.error || t('myOrders.redemption.toast.recoverFailed')
     showErrorToast(message)
   } finally {
     recoveringEmail.value = ''
@@ -208,11 +208,20 @@ const exportRecentRecovery = async () => {
     })
 
     if (rows.length === 0) {
-      showWarningToast('最近30天没有可导出的补号记录')
+      showWarningToast(t('myOrders.redemption.toast.noRecentRecovery'))
       return
     }
 
-    const csvHeader = ['用户邮箱', '状态', '原账号', '当前账号', '兑换时间', '补号时间', '补号模式', '失败原因']
+    const csvHeader = [
+      t('myOrders.redemption.columns.userEmail'),
+      t('myOrders.redemption.columns.latestState'),
+      t('myOrders.redemption.columns.originalAccount'),
+      t('myOrders.redemption.columns.currentAccount'),
+      t('myOrders.redemption.columns.redeemTime'),
+      t('myOrders.redemption.columns.recoveryTime'),
+      t('myOrders.redemption.columns.recoveryMode'),
+      t('myOrders.redemption.columns.failureReason')
+    ]
     const csvRows = rows.map(item => ([
       item.userEmail,
       getRedemptionStateLabel(item),
@@ -235,16 +244,17 @@ const exportRecentRecovery = async () => {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     const date = new Date()
-    const filename = `recovery-records-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}.csv`
+    const filenamePrefix = t('myOrders.redemption.exportFilenamePrefix')
+    const filename = `${filenamePrefix}-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}.csv`
     link.href = url
     link.download = filename
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
     URL.revokeObjectURL(url)
-    showSuccessToast(`已导出 ${rows.length} 条补号记录`)
+    showSuccessToast(t('myOrders.redemption.toast.exported', { count: rows.length }))
   } catch (err: any) {
-    const message = err?.response?.data?.error || '导出失败'
+    const message = err?.response?.data?.error || t('myOrders.redemption.toast.exportFailed')
     showErrorToast(message)
   }
 }
@@ -488,14 +498,21 @@ onUnmounted(() => {
           <div>
             <h3 class="text-lg font-semibold text-gray-900">{{ t('myOrders.redemption.title') }}</h3>
             <p class="text-sm text-gray-500">
-              共 {{ redemptionStats.total }} 条，封号 {{ redemptionStats.banned }} 条，可补号 {{ redemptionStats.recoverable }} 条，已补号 {{ redemptionStats.recovered }} 条
+              {{
+                t('myOrders.redemption.summaryLatest', {
+                  total: redemptionStats.total,
+                  banned: redemptionStats.banned,
+                  recoverable: redemptionStats.recoverable,
+                  recovered: redemptionStats.recovered
+                })
+              }}
             </p>
           </div>
         </div>
         <div class="flex items-center gap-2">
           <Button variant="outline" size="sm" class="h-9 rounded-xl" :disabled="redemptionLoading" @click="exportRecentRecovery">
             <Download class="h-4 w-4 mr-2" />
-            导出最近补号
+            {{ t('myOrders.redemption.exportRecent') }}
           </Button>
           <Button
             variant="outline"
@@ -511,10 +528,10 @@ onUnmounted(() => {
       </div>
 
       <div class="mb-4 flex items-center gap-2 flex-wrap">
-        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'all' ? 'border-black text-black' : ''" @click="changeRedemptionFilter('all')">全部</Button>
-        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'banned' ? 'border-amber-500 text-amber-700' : ''" @click="changeRedemptionFilter('banned')">封号</Button>
-        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'recoverable' ? 'border-blue-500 text-blue-700' : ''" @click="changeRedemptionFilter('recoverable')">可补号</Button>
-        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'recovered' ? 'border-green-500 text-green-700' : ''" @click="changeRedemptionFilter('recovered')">已补号</Button>
+        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'all' ? 'border-black text-black' : ''" @click="changeRedemptionFilter('all')">{{ t('myOrders.redemption.filters.all') }}</Button>
+        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'banned' ? 'border-amber-500 text-amber-700' : ''" @click="changeRedemptionFilter('banned')">{{ t('myOrders.redemption.filters.banned') }}</Button>
+        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'recoverable' ? 'border-blue-500 text-blue-700' : ''" @click="changeRedemptionFilter('recoverable')">{{ t('myOrders.redemption.filters.recoverable') }}</Button>
+        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'recovered' ? 'border-green-500 text-green-700' : ''" @click="changeRedemptionFilter('recovered')">{{ t('myOrders.redemption.filters.recovered') }}</Button>
       </div>
 
       <div v-if="redemptionLoading" class="py-10 text-center text-gray-500">
@@ -541,13 +558,13 @@ onUnmounted(() => {
         <table class="min-w-full text-sm">
           <thead>
             <tr class="text-left text-gray-500 border-b">
-              <th class="py-3 pr-4 font-medium">用户邮箱</th>
-              <th class="py-3 pr-4 font-medium">最新状态</th>
-              <th class="py-3 pr-4 font-medium">当前账号</th>
-              <th class="py-3 pr-4 font-medium">兑换时间</th>
-              <th class="py-3 pr-4 font-medium">补号时间</th>
-              <th class="py-3 pr-4 font-medium">质保截止</th>
-              <th class="py-3 pr-0 font-medium text-right">操作</th>
+              <th class="py-3 pr-4 font-medium">{{ t('myOrders.redemption.columns.userEmail') }}</th>
+              <th class="py-3 pr-4 font-medium">{{ t('myOrders.redemption.columns.latestState') }}</th>
+              <th class="py-3 pr-4 font-medium">{{ t('myOrders.redemption.columns.currentAccount') }}</th>
+              <th class="py-3 pr-4 font-medium">{{ t('myOrders.redemption.columns.redeemTime') }}</th>
+              <th class="py-3 pr-4 font-medium">{{ t('myOrders.redemption.columns.recoveryTime') }}</th>
+              <th class="py-3 pr-4 font-medium">{{ t('myOrders.redemption.columns.warrantyEnds') }}</th>
+              <th class="py-3 pr-0 font-medium text-right">{{ t('myOrders.orderList.actions') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -571,7 +588,7 @@ onUnmounted(() => {
                   @click="triggerRecover(record)"
                 >
                   <LifeBuoy class="h-3.5 w-3.5 mr-1.5" />
-                  {{ recoveringEmail === record.userEmail ? '补号中...' : '触发补号' }}
+                  {{ recoveringEmail === record.userEmail ? t('myOrders.redemption.actions.recovering') : t('myOrders.redemption.actions.recover') }}
                 </Button>
               </td>
             </tr>
@@ -589,7 +606,7 @@ onUnmounted(() => {
           {{ t('common.previous') }}
         </Button>
         <div class="text-sm text-gray-500">
-          第 {{ redemptionPagination.page }} / {{ redemptionPagination.totalPages }} 页 · 共 {{ redemptionPagination.total }} 条
+          {{ t('myOrders.redemption.pagination', { page: redemptionPagination.page, totalPages: redemptionPagination.totalPages, total: redemptionPagination.total }) }}
         </div>
         <Button
           variant="outline"
