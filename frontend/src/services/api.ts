@@ -169,12 +169,23 @@ export const userService = {
 
   async listRedeemRecords(params?: {
     status?: 'all' | 'banned' | 'recoverable' | 'recovered'
+    search?: string
     page?: number
     pageSize?: number
     days?: number
     limit?: number
   }): Promise<PointsRedeemRecordsResponse> {
     const response = await api.get('/user/points/redeem-records', { params })
+    return response.data
+  },
+
+  async getRedeemRecordLogs(originalCodeId: number): Promise<PointsRedeemRecordLogsResponse> {
+    const response = await api.get(`/user/points/redeem-records/${originalCodeId}/logs`)
+    return response.data
+  },
+
+  async reinviteRedeemRecord(originalCodeId: number): Promise<{ message: string }> {
+    const response = await api.post(`/user/points/redeem-records/${originalCodeId}/reinvite`)
     return response.data
   },
 
@@ -375,6 +386,17 @@ export interface PointsRedeemRecordLatestLog {
   createdAt: string | null
 }
 
+export interface PointsRedeemOperationLog {
+  id: number
+  type: 'invite' | 'recovery' | 'reinvite' | string
+  status: string
+  recoveryMode: string | null
+  recoveryCode: string | null
+  recoveryAccountEmail: string | null
+  errorMessage: string | null
+  createdAt: string | null
+}
+
 export interface PointsRedeemRecord {
   userEmail: string
   originalCodeId: number
@@ -408,6 +430,12 @@ export interface PointsRedeemRecordsResponse {
     recovered: number
     failed: number
   }
+}
+
+export interface PointsRedeemRecordLogsResponse {
+  originalCodeId: number
+  userEmail: string | null
+  logs: PointsRedeemOperationLog[]
 }
 
 export interface GptAccount {

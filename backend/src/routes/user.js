@@ -7,6 +7,8 @@ import { requireMenu, requireSuperAdmin } from '../middleware/rbac.js'
 import { getAdminMenuTreeForAccessContext, getUserAccessContext } from '../services/rbac.js'
 import { withLocks } from '../utils/locks.js'
 import { redeemCodeInternal } from './redemption-codes.js'
+import { fetchAccountUsersList } from '../services/account-sync.js'
+import { inviteUserToChatGPTTeam } from '../services/chatgpt-invite.js'
 import { getPointsWithdrawSettings } from '../utils/points-withdraw-settings.js'
 import { listUserPointsLedger, safeInsertPointsLedgerEntry } from '../utils/points-ledger.js'
 
@@ -217,6 +219,55 @@ const plusDaysIso = (value, days) => {
   const plus = baseMs + Math.max(1, Number(days) || 1) * 24 * 60 * 60 * 1000
   const d = new Date(plus)
   return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
+const isUserCodeOwned = (db, userId, originalCodeId) => {
+  const result = db.exec(
+    `
+      SELECT 1
+      FROM points_ledger
+      WHERE user_id = ?
+        AND action = 'redeem_team_seat'
+        AND ref_type = 'redemption_code'
+        AND ref_id = ?
+      LIMIT 1
+    `,
+    [userId, String(originalCodeId)]
+  )
+  return Boolean(result[0]?.values?.length)
+}
+
+const insertRecoveryLog = (db, payload = {}) => {
+  db.run(
+    `
+      INSERT INTO account_recovery_logs (
+        email,
+        original_code_id,
+        original_redeemed_at,
+        original_account_email,
+        recovery_mode,
+        recovery_code_id,
+        recovery_code,
+        recovery_account_email,
+        status,
+        error_message,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
+    `,
+    [
+      payload.email || null,
+      payload.originalCodeId || null,
+      payload.originalRedeemedAt || null,
+      payload.originalAccountEmail || null,
+      payload.recoveryMode || null,
+      payload.recoveryCodeId || null,
+      payload.recoveryCode || null,
+      payload.recoveryAccountEmail || null,
+      payload.status || 'pending',
+      payload.errorMessage || null,
+    ]
+  )
 }
 
 const pad2 = (value) => String(value).padStart(2, '0')
@@ -887,6 +938,7 @@ router.get('/points/redeem-records', authenticateToken, async (req, res) => {
   try {
     const db = await getDatabase()
     const status = String(req.query.status || 'all').trim().toLowerCase()
+    const search = String(req.query.search || '').trim().toLowerCase()
     const page = Math.max(1, toInt(req.query.page, 1))
     const pageSize = Math.min(200, Math.max(1, toInt(req.query.pageSize, toInt(req.query.limit, 50))))
     const limit = Math.min(900, Math.max(pageSize, Math.max(1, toInt(req.query.limit, 900))))
@@ -1126,6 +1178,9 @@ router.get('/points/redeem-records', authenticateToken, async (req, res) => {
     } else if (status === 'recovered') {
       records = records.filter(item => item.state === 'recovered')
     }
+    if (search) {
+      records = records.filter(item => item.userEmail.includes(search))
+    }
 
     const total = records.length
     const totalPages = Math.max(1, Math.ceil(total / pageSize))
@@ -1153,6 +1208,230 @@ router.get('/points/redeem-records', authenticateToken, async (req, res) => {
     })
   } catch (error) {
     console.error('List user redeem records error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.get('/points/redeem-records/:originalCodeId/logs', authenticateToken, async (req, res) => {
+  const userId = req.user?.id
+  if (!userId) {
+    return res.status(401).json({ error: 'Access denied. No user provided.' })
+  }
+
+  try {
+    const originalCodeId = toInt(req.params.originalCodeId, 0)
+    if (!originalCodeId) {
+      return res.status(400).json({ error: 'Invalid originalCodeId' })
+    }
+
+    const db = await getDatabase()
+    if (!isUserCodeOwned(db, userId, originalCodeId)) {
+      return res.status(404).json({ error: 'Record not found' })
+    }
+
+    const codeRow = db.exec(
+      `
+        SELECT id, code, redeemed_by, redeemed_at, account_email
+        FROM redemption_codes
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [originalCodeId]
+    )[0]?.values?.[0]
+
+    if (!codeRow) {
+      return res.status(404).json({ error: 'Record not found' })
+    }
+
+    const userEmail = extractEmailFromRedeemedBy(codeRow[2])
+    const initialLog = {
+      id: 0,
+      type: 'invite',
+      status: 'success',
+      recoveryMode: 'initial',
+      recoveryCode: String(codeRow[1] || ''),
+      recoveryAccountEmail: codeRow[4] ? String(codeRow[4]) : null,
+      errorMessage: null,
+      createdAt: codeRow[3] ? String(codeRow[3]) : null,
+    }
+
+    const logRows = db.exec(
+      `
+        SELECT
+          id,
+          status,
+          recovery_mode,
+          recovery_code,
+          recovery_account_email,
+          error_message,
+          created_at
+        FROM account_recovery_logs
+        WHERE original_code_id = ?
+        ORDER BY id DESC
+      `,
+      [originalCodeId]
+    )[0]?.values || []
+
+    const logs = [
+      ...logRows.map(row => ({
+        id: Number(row[0] || 0),
+        type: String(row[2] || '').trim() === 'reinvite' ? 'reinvite' : 'recovery',
+        status: row[1] ? String(row[1]) : '',
+        recoveryMode: row[2] ? String(row[2]) : null,
+        recoveryCode: row[3] ? String(row[3]) : null,
+        recoveryAccountEmail: row[4] ? String(row[4]) : null,
+        errorMessage: row[5] ? String(row[5]) : null,
+        createdAt: row[6] ? String(row[6]) : null,
+      })),
+      initialLog,
+    ].sort((a, b) => (parseTimeMs(b.createdAt) || 0) - (parseTimeMs(a.createdAt) || 0))
+
+    return res.json({
+      originalCodeId,
+      userEmail: userEmail || null,
+      logs
+    })
+  } catch (error) {
+    console.error('Get redeem operation logs error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.post('/points/redeem-records/:originalCodeId/reinvite', authenticateToken, async (req, res) => {
+  const userId = req.user?.id
+  if (!userId) {
+    return res.status(401).json({ error: 'Access denied. No user provided.' })
+  }
+
+  try {
+    const originalCodeId = toInt(req.params.originalCodeId, 0)
+    if (!originalCodeId) {
+      return res.status(400).json({ error: 'Invalid originalCodeId' })
+    }
+
+    return await withLocks([`user:reinvite:${userId}:${originalCodeId}`], async () => {
+      const db = await getDatabase()
+      if (!isUserCodeOwned(db, userId, originalCodeId)) {
+        return res.status(404).json({ error: 'Record not found' })
+      }
+
+      const row = db.exec(
+        `
+          SELECT id, code, is_redeemed, redeemed_by, redeemed_at, account_email
+          FROM redemption_codes
+          WHERE id = ?
+          LIMIT 1
+        `,
+        [originalCodeId]
+      )[0]?.values?.[0]
+
+      if (!row) {
+        return res.status(404).json({ error: 'Record not found' })
+      }
+
+      const isRedeemed = Number(row[2] || 0) === 1
+      if (!isRedeemed) {
+        return res.status(400).json({ error: '该兑换码尚未使用，无法重新邀请' })
+      }
+
+      const inviteEmail = extractEmailFromRedeemedBy(row[3])
+      if (!inviteEmail) {
+        return res.status(400).json({ error: '兑换用户邮箱缺失，无法重新邀请' })
+      }
+
+      const accountEmail = String(row[5] || '').trim()
+      if (!accountEmail) {
+        return res.status(400).json({ error: '该兑换码未绑定账号，无法重新邀请' })
+      }
+
+      const accountRow = db.exec(
+        `
+          SELECT id, email, token, chatgpt_account_id, oai_device_id
+          FROM gpt_accounts
+          WHERE lower(email) = lower(?)
+          LIMIT 1
+        `,
+        [accountEmail]
+      )[0]?.values?.[0]
+
+      if (!accountRow) {
+        return res.status(404).json({ error: '所属账号不存在，无法重新邀请' })
+      }
+
+      const accountId = Number(accountRow[0] || 0)
+      const token = String(accountRow[2] || '').trim()
+      const chatgptAccountId = String(accountRow[3] || '').trim()
+      const oaiDeviceId = String(accountRow[4] || '').trim()
+
+      if (!token || !chatgptAccountId) {
+        return res.status(400).json({ error: '所属账号缺少 token 或 chatgpt_account_id，无法重新邀请' })
+      }
+
+      let alreadyInTeam = false
+      try {
+        const users = await fetchAccountUsersList(accountId, { userListParams: { query: inviteEmail, limit: 20, offset: 0 } })
+        alreadyInTeam = Array.isArray(users?.items) && users.items.some(item => String(item?.email || '').trim().toLowerCase() === inviteEmail)
+      } catch (error) {
+        alreadyInTeam = false
+      }
+
+      if (alreadyInTeam) {
+        insertRecoveryLog(db, {
+          email: inviteEmail,
+          originalCodeId,
+          originalRedeemedAt: row[4] ? String(row[4]) : null,
+          originalAccountEmail: accountEmail,
+          recoveryMode: 'reinvite',
+          recoveryCodeId: originalCodeId,
+          recoveryCode: String(row[1] || ''),
+          recoveryAccountEmail: accountEmail,
+          status: 'skipped',
+          errorMessage: 'already-in-team'
+        })
+        saveDatabase()
+        return res.status(409).json({ error: '用户已加入 Team，无需重新发送邀请' })
+      }
+
+      const inviteResult = await inviteUserToChatGPTTeam(inviteEmail, {
+        token,
+        chatgpt_account_id: chatgptAccountId,
+        oai_device_id: oaiDeviceId
+      })
+
+      if (!inviteResult?.success) {
+        const errorMessage = typeof inviteResult?.error === 'string' && inviteResult.error.trim() ? inviteResult.error.trim() : '重新邀请失败'
+        insertRecoveryLog(db, {
+          email: inviteEmail,
+          originalCodeId,
+          originalRedeemedAt: row[4] ? String(row[4]) : null,
+          originalAccountEmail: accountEmail,
+          recoveryMode: 'reinvite',
+          recoveryCodeId: originalCodeId,
+          recoveryCode: String(row[1] || ''),
+          recoveryAccountEmail: accountEmail,
+          status: 'failed',
+          errorMessage
+        })
+        saveDatabase()
+        return res.status(503).json({ error: errorMessage })
+      }
+
+      insertRecoveryLog(db, {
+        email: inviteEmail,
+        originalCodeId,
+        originalRedeemedAt: row[4] ? String(row[4]) : null,
+        originalAccountEmail: accountEmail,
+        recoveryMode: 'reinvite',
+        recoveryCodeId: originalCodeId,
+        recoveryCode: String(row[1] || ''),
+        recoveryAccountEmail: accountEmail,
+        status: 'success'
+      })
+      saveDatabase()
+      return res.json({ message: '重新邀请已发送' })
+    })
+  } catch (error) {
+    console.error('User reinvite error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })

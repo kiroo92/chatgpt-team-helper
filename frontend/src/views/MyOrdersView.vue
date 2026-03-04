@@ -8,8 +8,9 @@ import { useI18n } from '@/composables/useI18n'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useToast } from '@/components/ui/toast'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import LanguageSwitch from '@/components/LanguageSwitch.vue'
-import { Link2, RefreshCw, ShoppingCart, CheckCircle2, Clock, RotateCcw, Ban, AlertCircle, Coins, Download, LifeBuoy } from 'lucide-vue-next'
+import { Link2, RefreshCw, ShoppingCart, CheckCircle2, Clock, RotateCcw, Ban, AlertCircle, Coins, Download, LifeBuoy, Search, ListOrdered, Mail } from 'lucide-vue-next'
 
 const router = useRouter()
 const appConfigStore = useAppConfigStore()
@@ -34,6 +35,22 @@ const redemptionError = ref('')
 const redemptionFilter = ref<'all' | 'banned' | 'recoverable' | 'recovered'>('all')
 const recoveringEmail = ref('')
 const redemptionPagination = ref({ page: 1, pageSize: 20, total: 0, totalPages: 1 })
+const redemptionSearch = ref('')
+const reinvitingCodeId = ref<number | null>(null)
+const logDialogOpen = ref(false)
+const logDialogLoading = ref(false)
+const logDialogError = ref('')
+const logDialogUserEmail = ref('')
+const logDialogLogs = ref<Array<{
+  id: number
+  type: string
+  status: string
+  recoveryMode: string | null
+  recoveryCode: string | null
+  recoveryAccountEmail: string | null
+  errorMessage: string | null
+  createdAt: string | null
+}>>([])
 
 const dateFormatOptions = computed(() => ({
   timeZone: appConfigStore.timezone,
@@ -132,6 +149,7 @@ const loadRedemptionRecords = async () => {
   try {
     const response = await userService.listRedeemRecords({
       status: redemptionFilter.value,
+      search: redemptionSearch.value.trim() || undefined,
       page: redemptionPagination.value.page,
       pageSize: redemptionPagination.value.pageSize,
       days: 90
@@ -150,6 +168,11 @@ const loadRedemptionRecords = async () => {
   } finally {
     redemptionLoading.value = false
   }
+}
+
+const applyRedemptionSearch = async () => {
+  redemptionPagination.value.page = 1
+  await loadRedemptionRecords()
 }
 
 const changeRedemptionFilter = async (filter: 'all' | 'banned' | 'recoverable' | 'recovered') => {
@@ -178,6 +201,54 @@ const triggerRecover = async (item: PointsRedeemRecord) => {
     showErrorToast(message)
   } finally {
     recoveringEmail.value = ''
+  }
+}
+
+const reinviteRecord = async (item: PointsRedeemRecord) => {
+  if (reinvitingCodeId.value != null) return
+  reinvitingCodeId.value = item.originalCodeId
+  try {
+    const response = await userService.reinviteRedeemRecord(item.originalCodeId)
+    showSuccessToast(response?.message || t('myOrders.redemption.toast.reinviteSent'))
+    await loadRedemptionRecords()
+    if (logDialogOpen.value) {
+      await openOperationLogs(item)
+    }
+  } catch (err: any) {
+    const message = err?.response?.data?.error || t('myOrders.redemption.toast.reinviteFailed')
+    showErrorToast(message)
+  } finally {
+    reinvitingCodeId.value = null
+  }
+}
+
+const logTypeLabel = (type: string) => {
+  if (type === 'invite') return t('myOrders.redemption.log.typeInvite')
+  if (type === 'reinvite') return t('myOrders.redemption.log.typeReinvite')
+  return t('myOrders.redemption.log.typeRecovery')
+}
+
+const logStatusLabel = (status: string) => {
+  if (status === 'success') return t('myOrders.redemption.log.statusSuccess')
+  if (status === 'failed') return t('myOrders.redemption.log.statusFailed')
+  if (status === 'skipped') return t('myOrders.redemption.log.statusSkipped')
+  return status || t('common.unknown')
+}
+
+const openOperationLogs = async (item: PointsRedeemRecord) => {
+  logDialogOpen.value = true
+  logDialogLoading.value = true
+  logDialogError.value = ''
+  logDialogUserEmail.value = item.userEmail
+  logDialogLogs.value = []
+  try {
+    const response = await userService.getRedeemRecordLogs(item.originalCodeId)
+    logDialogUserEmail.value = response.userEmail || item.userEmail
+    logDialogLogs.value = response.logs || []
+  } catch (err: any) {
+    logDialogError.value = err?.response?.data?.error || t('errors.loadFailed')
+  } finally {
+    logDialogLoading.value = false
   }
 }
 
@@ -534,6 +605,21 @@ onUnmounted(() => {
         <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'recovered' ? 'border-green-500 text-green-700' : ''" @click="changeRedemptionFilter('recovered')">{{ t('myOrders.redemption.filters.recovered') }}</Button>
       </div>
 
+      <div class="mb-4 flex items-center gap-2">
+        <div class="relative w-full max-w-sm">
+          <Search class="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <Input
+            v-model="redemptionSearch"
+            class="pl-9 h-9 rounded-lg"
+            :placeholder="t('myOrders.redemption.searchPlaceholder')"
+            @keydown.enter.prevent="applyRedemptionSearch"
+          />
+        </div>
+        <Button variant="outline" size="sm" class="h-9 rounded-lg" :disabled="redemptionLoading" @click="applyRedemptionSearch">
+          {{ t('myOrders.redemption.searchButton') }}
+        </Button>
+      </div>
+
       <div v-if="redemptionLoading" class="py-10 text-center text-gray-500">
         <RefreshCw class="h-5 w-5 inline-block mr-2 animate-spin" />
         {{ t('common.loading') }}
@@ -580,16 +666,37 @@ onUnmounted(() => {
               <td class="py-3 pr-4 text-gray-600 whitespace-nowrap">{{ formatDate(record.latest?.createdAt) }}</td>
               <td class="py-3 pr-4 text-gray-600 whitespace-nowrap">{{ formatDate(record.windowEndsAt) }}</td>
               <td class="py-3 pr-0 text-right whitespace-nowrap">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  class="h-8 text-xs border-gray-200 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600 transition-colors"
-                  :disabled="!record.canRecover || recoveringEmail === record.userEmail"
-                  @click="triggerRecover(record)"
-                >
-                  <LifeBuoy class="h-3.5 w-3.5 mr-1.5" />
-                  {{ recoveringEmail === record.userEmail ? t('myOrders.redemption.actions.recovering') : t('myOrders.redemption.actions.recover') }}
-                </Button>
+                <div class="inline-flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    class="h-8 text-xs border-gray-200 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                    :disabled="!record.canRecover || recoveringEmail === record.userEmail"
+                    @click="triggerRecover(record)"
+                  >
+                    <LifeBuoy class="h-3.5 w-3.5 mr-1.5" />
+                    {{ recoveringEmail === record.userEmail ? t('myOrders.redemption.actions.recovering') : t('myOrders.redemption.actions.recover') }}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    class="h-8 text-xs border-gray-200 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-600 transition-colors"
+                    :disabled="reinvitingCodeId === record.originalCodeId"
+                    @click="reinviteRecord(record)"
+                  >
+                    <Mail class="h-3.5 w-3.5 mr-1.5" />
+                    {{ reinvitingCodeId === record.originalCodeId ? t('myOrders.redemption.actions.reinviting') : t('myOrders.redemption.actions.reinvite') }}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    class="h-8 text-xs border-gray-200 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
+                    @click="openOperationLogs(record)"
+                  >
+                    <ListOrdered class="h-3.5 w-3.5 mr-1.5" />
+                    {{ t('myOrders.redemption.actions.logs') }}
+                  </Button>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -618,5 +725,48 @@ onUnmounted(() => {
         </Button>
       </div>
     </div>
+
+    <Dialog v-model:open="logDialogOpen">
+      <DialogContent class="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{{ t('myOrders.redemption.log.title') }}</DialogTitle>
+          <DialogDescription>
+            {{ t('myOrders.redemption.log.desc', { email: logDialogUserEmail || '-' }) }}
+          </DialogDescription>
+        </DialogHeader>
+        <div v-if="logDialogLoading" class="py-8 text-center text-gray-500">
+          <RefreshCw class="h-4 w-4 inline-block mr-2 animate-spin" />
+          {{ t('common.loading') }}
+        </div>
+        <div v-else-if="logDialogError" class="py-4 text-sm text-red-600">
+          {{ logDialogError }}
+        </div>
+        <div v-else-if="logDialogLogs.length === 0" class="py-6 text-sm text-gray-500">
+          {{ t('myOrders.redemption.log.empty') }}
+        </div>
+        <div v-else class="max-h-[60vh] overflow-y-auto">
+          <table class="min-w-full text-sm">
+            <thead>
+              <tr class="text-left text-gray-500 border-b">
+                <th class="py-2 pr-3 font-medium">{{ t('myOrders.redemption.log.columns.time') }}</th>
+                <th class="py-2 pr-3 font-medium">{{ t('myOrders.redemption.log.columns.type') }}</th>
+                <th class="py-2 pr-3 font-medium">{{ t('myOrders.redemption.log.columns.status') }}</th>
+                <th class="py-2 pr-3 font-medium">{{ t('myOrders.redemption.log.columns.account') }}</th>
+                <th class="py-2 pr-0 font-medium">{{ t('myOrders.redemption.log.columns.message') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="log in logDialogLogs" :key="`${log.id}-${log.createdAt || ''}`" class="border-b last:border-b-0">
+                <td class="py-2 pr-3 text-gray-600 whitespace-nowrap">{{ formatDate(log.createdAt) }}</td>
+                <td class="py-2 pr-3 text-gray-900">{{ logTypeLabel(log.type) }}</td>
+                <td class="py-2 pr-3 text-gray-900">{{ logStatusLabel(log.status) }}</td>
+                <td class="py-2 pr-3 text-gray-600">{{ log.recoveryAccountEmail || '-' }}</td>
+                <td class="py-2 pr-0 text-gray-600">{{ log.errorMessage || '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
