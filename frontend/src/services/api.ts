@@ -167,6 +167,17 @@ export const userService = {
     return response.data
   },
 
+  async listRedeemRecords(params?: {
+    status?: 'all' | 'banned' | 'recoverable' | 'recovered'
+    page?: number
+    pageSize?: number
+    days?: number
+    limit?: number
+  }): Promise<PointsRedeemRecordsResponse> {
+    const response = await api.get('/user/points/redeem-records', { params })
+    return response.data
+  },
+
   async requestWithdrawal(payload: { points: number; method: 'alipay' | 'wechat'; payoutAccount: string }): Promise<PointsWithdrawRequestResponse> {
     const response = await api.post('/user/points/withdraw', payload)
     return response.data
@@ -351,6 +362,51 @@ export interface PointsRedeemInviteUnlockResponse {
   invite: {
     enabled: boolean
     costPoints: number
+  }
+}
+
+export interface PointsRedeemRecordLatestLog {
+  id: number
+  status: string
+  errorMessage: string | null
+  recoveryMode: string | null
+  recoveryCode: string | null
+  recoveryAccountEmail: string | null
+  createdAt: string | null
+}
+
+export interface PointsRedeemRecord {
+  userEmail: string
+  originalCodeId: number
+  originalCode: string
+  redeemedBy: string
+  redeemedAt: string | null
+  originalAccountEmail: string
+  currentAccountEmail: string | null
+  orderType: string
+  state: 'normal' | 'banned' | 'failed' | 'recovered' | string
+  isBanned: boolean
+  inWarranty: boolean
+  canRecover: boolean
+  windowEndsAt: string | null
+  latestActivityAt: string | null
+  latest: PointsRedeemRecordLatestLog | null
+}
+
+export interface PointsRedeemRecordsResponse {
+  records: PointsRedeemRecord[]
+  pagination: {
+    page: number
+    pageSize: number
+    total: number
+    totalPages: number
+  }
+  summary: {
+    total: number
+    banned: number
+    recoverable: number
+    recovered: number
+    failed: number
   }
 }
 

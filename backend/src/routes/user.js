@@ -165,6 +165,7 @@ router.get('/invite-summary', authenticateToken, async (req, res) => {
 
 const TEAM_SEAT_COST_POINTS = Math.max(1, toInt(process.env.TEAM_SEAT_COST_POINTS, 10))
 const INVITE_UNLOCK_COST_POINTS = Math.max(1, toInt(process.env.INVITE_UNLOCK_COST_POINTS, 15))
+const ACCOUNT_RECOVERY_WINDOW_DAYS = Math.max(1, toInt(process.env.ACCOUNT_RECOVERY_WINDOW_DAYS, 30))
 
 const WITHDRAW_MAX_POINTS_PER_REQUEST = Math.max(0, toInt(process.env.WITHDRAW_MAX_POINTS_PER_REQUEST, 500))
 const WITHDRAW_DAILY_MAX_POINTS = Math.max(0, toInt(process.env.WITHDRAW_DAILY_MAX_POINTS, 500))
@@ -186,6 +187,36 @@ const formatCashAmount = (cashCents) => {
   if (!Number.isFinite(normalized) || normalized <= 0) return '0.00'
   const yuan = Math.round(normalized) / 100
   return yuan.toFixed(2)
+}
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const extractEmailFromRedeemedBy = (redeemedBy) => {
+  const raw = String(redeemedBy ?? '').trim()
+  if (!raw) return ''
+
+  const match = raw.match(/email\s*:\s*([^|]+)(?:\||$)/i)
+  if (match?.[1]) {
+    const candidate = String(match[1]).trim().toLowerCase()
+    return EMAIL_REGEX.test(candidate) ? candidate : ''
+  }
+
+  const normalized = raw.toLowerCase()
+  return EMAIL_REGEX.test(normalized) ? normalized : ''
+}
+
+const parseTimeMs = (value) => {
+  const raw = String(value ?? '').trim()
+  if (!raw) return null
+  const parsed = Date.parse(raw.includes('T') ? raw : raw.replace(' ', 'T'))
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+const plusDaysIso = (value, days) => {
+  const baseMs = parseTimeMs(value)
+  if (baseMs == null) return null
+  const plus = baseMs + Math.max(1, Number(days) || 1) * 24 * 60 * 60 * 1000
+  const d = new Date(plus)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
 }
 
 const pad2 = (value) => String(value).padStart(2, '0')
@@ -844,6 +875,285 @@ router.get('/points/ledger', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('List points ledger error:', error)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.get('/points/redeem-records', authenticateToken, async (req, res) => {
+  const userId = req.user?.id
+  if (!userId) {
+    return res.status(401).json({ error: 'Access denied. No user provided.' })
+  }
+
+  try {
+    const db = await getDatabase()
+    const status = String(req.query.status || 'all').trim().toLowerCase()
+    const page = Math.max(1, toInt(req.query.page, 1))
+    const pageSize = Math.min(200, Math.max(1, toInt(req.query.pageSize, toInt(req.query.limit, 50))))
+    const limit = Math.min(900, Math.max(pageSize, Math.max(1, toInt(req.query.limit, 900))))
+    const days = Math.max(1, Math.min(90, toInt(req.query.days, 90)))
+    const threshold = `-${days} days`
+
+    const ledgerRows = db.exec(
+      `
+        SELECT id, ref_id
+        FROM points_ledger
+        WHERE user_id = ?
+          AND action = 'redeem_team_seat'
+          AND ref_type = 'redemption_code'
+          AND ref_id IS NOT NULL
+          AND TRIM(ref_id) != ''
+          AND created_at >= DATETIME('now', 'localtime', ?)
+        ORDER BY id DESC
+        LIMIT ?
+      `,
+      [userId, threshold, limit]
+    )[0]?.values || []
+
+    const codeIds = [...new Set(
+      ledgerRows
+        .map(row => toInt(row[1], 0))
+        .filter(id => id > 0)
+    )]
+
+    if (codeIds.length === 0) {
+      return res.json({
+        records: [],
+        pagination: {
+          page,
+          pageSize,
+          total: 0,
+          totalPages: 1
+        },
+        summary: {
+          total: 0,
+          banned: 0,
+          recoverable: 0,
+          recovered: 0,
+          failed: 0
+        }
+      })
+    }
+
+    const placeholders = codeIds.map(() => '?').join(',')
+    const codeRows = db.exec(
+      `
+        SELECT
+          rc.id,
+          rc.code,
+          rc.redeemed_by,
+          rc.redeemed_at,
+          rc.account_email,
+          COALESCE(
+            NULLIF((
+              SELECT po.order_type
+              FROM purchase_orders po
+              WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
+              ORDER BY po.created_at DESC
+              LIMIT 1
+            ), ''),
+            NULLIF(rc.order_type, ''),
+            'warranty'
+          ) AS order_type
+        FROM redemption_codes rc
+        WHERE rc.id IN (${placeholders})
+      `,
+      codeIds
+    )[0]?.values || []
+
+    const latestLogRows = db.exec(
+      `
+        SELECT
+          ar.original_code_id,
+          ar.id,
+          ar.status,
+          ar.error_message,
+          ar.recovery_mode,
+          ar.recovery_code,
+          ar.recovery_account_email,
+          ar.created_at
+        FROM account_recovery_logs ar
+        JOIN (
+          SELECT original_code_id, MAX(id) AS latest_id
+          FROM account_recovery_logs
+          WHERE original_code_id IN (${placeholders})
+          GROUP BY original_code_id
+        ) latest ON latest.latest_id = ar.id
+      `,
+      codeIds
+    )[0]?.values || []
+
+    const latestCompletedRows = db.exec(
+      `
+        SELECT
+          ar.original_code_id,
+          ar.recovery_account_email
+        FROM account_recovery_logs ar
+        JOIN (
+          SELECT original_code_id, MAX(id) AS latest_id
+          FROM account_recovery_logs
+          WHERE status IN ('success', 'skipped')
+            AND original_code_id IN (${placeholders})
+          GROUP BY original_code_id
+        ) latest ON latest.latest_id = ar.id
+      `,
+      codeIds
+    )[0]?.values || []
+
+    const latestLogByCodeId = new Map()
+    for (const row of latestLogRows) {
+      const codeId = Number(row[0] || 0)
+      if (!codeId) continue
+      latestLogByCodeId.set(codeId, {
+        id: Number(row[1] || 0),
+        status: row[2] ? String(row[2]) : '',
+        errorMessage: row[3] ? String(row[3]) : null,
+        recoveryMode: row[4] ? String(row[4]) : null,
+        recoveryCode: row[5] ? String(row[5]) : null,
+        recoveryAccountEmail: row[6] ? String(row[6]) : null,
+        createdAt: row[7] ? String(row[7]) : null,
+      })
+    }
+
+    const completedRecoveryEmailByCodeId = new Map()
+    for (const row of latestCompletedRows) {
+      const codeId = Number(row[0] || 0)
+      if (!codeId) continue
+      const accountEmail = row[1] ? String(row[1]).trim() : ''
+      completedRecoveryEmailByCodeId.set(codeId, accountEmail)
+    }
+
+    const currentAccountEmails = new Set()
+    for (const row of codeRows) {
+      const codeId = Number(row[0] || 0)
+      if (!codeId) continue
+      const originalAccountEmail = String(row[4] || '').trim()
+      const recoveryAccountEmail = String(completedRecoveryEmailByCodeId.get(codeId) || '').trim()
+      const currentAccountEmail = recoveryAccountEmail || originalAccountEmail
+      if (currentAccountEmail) currentAccountEmails.add(currentAccountEmail.toLowerCase())
+    }
+
+    const currentAccountStatusByEmail = new Map()
+    if (currentAccountEmails.size > 0) {
+      const accountEmailList = Array.from(currentAccountEmails)
+      const accountPlaceholders = accountEmailList.map(() => '?').join(',')
+      const accountRows = db.exec(
+        `
+          SELECT email, COALESCE(is_banned, 0) AS is_banned
+          FROM gpt_accounts
+          WHERE lower(email) IN (${accountPlaceholders})
+        `,
+        accountEmailList
+      )[0]?.values || []
+
+      for (const row of accountRows) {
+        const email = String(row[0] || '').trim().toLowerCase()
+        currentAccountStatusByEmail.set(email, Number(row[1] || 0) === 1)
+      }
+    }
+
+    const groupedByUserEmail = new Map()
+
+    for (const row of codeRows) {
+      const codeId = Number(row[0] || 0)
+      if (!codeId) continue
+
+      const redeemedBy = String(row[2] || '').trim()
+      const userEmail = extractEmailFromRedeemedBy(redeemedBy)
+      if (!userEmail) continue
+
+      const redeemedAt = row[3] ? String(row[3]) : null
+      const originalAccountEmail = String(row[4] || '').trim()
+      const orderType = String(row[5] || 'warranty').trim().toLowerCase()
+
+      const latestLog = latestLogByCodeId.get(codeId) || null
+      const completedRecoveryEmail = String(completedRecoveryEmailByCodeId.get(codeId) || '').trim()
+      const currentAccountEmail = completedRecoveryEmail || originalAccountEmail
+      const currentAccountEmailKey = currentAccountEmail.toLowerCase()
+      const isBanned = currentAccountEmail
+        ? !currentAccountStatusByEmail.has(currentAccountEmailKey) || currentAccountStatusByEmail.get(currentAccountEmailKey) === true
+        : true
+
+      const windowEndsAt = plusDaysIso(redeemedAt, ACCOUNT_RECOVERY_WINDOW_DAYS)
+      const windowEndsMs = parseTimeMs(windowEndsAt)
+      const inWarranty = windowEndsMs != null && windowEndsMs > Date.now()
+      const canRecover = isBanned && inWarranty && orderType !== 'no_warranty'
+
+      let state = 'normal'
+      if (isBanned && latestLog?.status === 'failed') {
+        state = 'failed'
+      } else if (isBanned) {
+        state = 'banned'
+      } else if (latestLog) {
+        state = 'recovered'
+      }
+
+      const redeemedAtMs = parseTimeMs(redeemedAt)
+      const latestLogAtMs = parseTimeMs(latestLog?.createdAt)
+      const latestActivityMs = Math.max(redeemedAtMs || 0, latestLogAtMs || 0)
+
+      const mapped = {
+        userEmail,
+        originalCodeId: codeId,
+        originalCode: String(row[1] || ''),
+        redeemedBy,
+        redeemedAt,
+        originalAccountEmail,
+        currentAccountEmail: currentAccountEmail || null,
+        orderType,
+        state,
+        isBanned,
+        inWarranty,
+        canRecover,
+        windowEndsAt,
+        latestActivityAt: latestActivityMs > 0 ? new Date(latestActivityMs).toISOString() : redeemedAt,
+        latest: latestLog
+      }
+
+      const current = groupedByUserEmail.get(userEmail)
+      const currentMs = parseTimeMs(current?.latestActivityAt) || 0
+      if (!current || latestActivityMs >= currentMs) {
+        groupedByUserEmail.set(userEmail, mapped)
+      }
+    }
+
+    let records = Array.from(groupedByUserEmail.values())
+      .sort((a, b) => (parseTimeMs(b.latestActivityAt) || 0) - (parseTimeMs(a.latestActivityAt) || 0))
+
+    if (status === 'banned') {
+      records = records.filter(item => item.state === 'banned' || item.state === 'failed')
+    } else if (status === 'recoverable') {
+      records = records.filter(item => item.canRecover)
+    } else if (status === 'recovered') {
+      records = records.filter(item => item.state === 'recovered')
+    }
+
+    const total = records.length
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+    const safePage = Math.min(page, totalPages)
+    const offset = (safePage - 1) * pageSize
+    const pagedRecords = records.slice(offset, offset + pageSize)
+
+    const summary = {
+      total,
+      banned: records.filter(item => item.state === 'banned' || item.state === 'failed').length,
+      recoverable: records.filter(item => item.canRecover).length,
+      recovered: records.filter(item => item.state === 'recovered').length,
+      failed: records.filter(item => item.state === 'failed').length
+    }
+
+    return res.json({
+      records: pagedRecords,
+      pagination: {
+        page: safePage,
+        pageSize,
+        total,
+        totalPages
+      },
+      summary
+    })
+  } catch (error) {
+    console.error('List user redeem records error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
   }
 })
 

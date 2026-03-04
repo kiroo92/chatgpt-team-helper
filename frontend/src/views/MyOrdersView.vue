@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { authService, purchaseService, userService, type PurchaseOrder, type PurchaseMyOrdersParams, type PointsLedgerRecord } from '@/services/api'
+import { authService, purchaseService, redemptionCodeService, userService, type PurchaseOrder, type PurchaseMyOrdersParams, type PointsRedeemRecord } from '@/services/api'
 import { formatShanghaiDate } from '@/lib/datetime'
 import { useAppConfigStore } from '@/stores/appConfig'
 import { useI18n } from '@/composables/useI18n'
@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useToast } from '@/components/ui/toast'
 import LanguageSwitch from '@/components/LanguageSwitch.vue'
-import { Link2, RefreshCw, ShoppingCart, CheckCircle2, Clock, RotateCcw, Ban, AlertCircle, Coins } from 'lucide-vue-next'
+import { Link2, RefreshCw, ShoppingCart, CheckCircle2, Clock, RotateCcw, Ban, AlertCircle, Coins, Download, LifeBuoy } from 'lucide-vue-next'
 
 const router = useRouter()
 const appConfigStore = useAppConfigStore()
@@ -27,10 +27,13 @@ const totalPages = computed(() => Math.max(1, Math.ceil(paginationMeta.value.tot
 const bindOrderNo = ref('')
 const binding = ref(false)
 
-// 积分兑换记录
-const redemptionRecords = ref<PointsLedgerRecord[]>([])
+// 积分兑换记录（按邮箱聚合，显示最新状态）
+const redemptionRecords = ref<PointsRedeemRecord[]>([])
 const redemptionLoading = ref(false)
 const redemptionError = ref('')
+const redemptionFilter = ref<'all' | 'banned' | 'recoverable' | 'recovered'>('all')
+const recoveringEmail = ref('')
+const redemptionPagination = ref({ page: 1, pageSize: 20, total: 0, totalPages: 1 })
 
 const dateFormatOptions = computed(() => ({
   timeZone: appConfigStore.timezone,
@@ -71,20 +74,24 @@ const stats = computed(() => {
 
 const redemptionStats = computed(() => {
   const total = redemptionRecords.value.length
-  const totalPoints = redemptionRecords.value.reduce((sum, r) => sum + Math.abs(r.deltaPoints || 0), 0)
-  return { total, totalPoints }
+  const banned = redemptionRecords.value.filter(r => r.state === 'banned' || r.state === 'failed').length
+  const recoverable = redemptionRecords.value.filter(r => r.canRecover).length
+  const recovered = redemptionRecords.value.filter(r => r.state === 'recovered').length
+  return { total, banned, recoverable, recovered }
 })
 
-const getRedemptionLabel = (item: PointsLedgerRecord) => {
-  if (item.remark) return item.remark
-  switch (item.action) {
-    case 'redeem_team_seat':
-      return t('pointsExchange.ledger.actions.teamSeat')
-    case 'redeem_invite_unlock':
-      return t('pointsExchange.ledger.actions.inviteUnlock')
-    default:
-      return item.action || t('pointsExchange.ledger.actions.default')
-  }
+const getRedemptionStateLabel = (item: PointsRedeemRecord) => {
+  if (item.state === 'recovered') return '已补号'
+  if (item.state === 'failed') return '补号失败'
+  if (item.state === 'banned') return '已封号'
+  return '正常'
+}
+
+const getRedemptionStateClass = (item: PointsRedeemRecord) => {
+  if (item.state === 'recovered') return 'bg-green-100 text-green-700 border-green-200'
+  if (item.state === 'failed') return 'bg-red-100 text-red-700 border-red-200'
+  if (item.state === 'banned') return 'bg-amber-100 text-amber-700 border-amber-200'
+  return 'bg-gray-100 text-gray-700 border-gray-200'
 }
 
 const buildParams = (): PurchaseMyOrdersParams => ({
@@ -123,11 +130,14 @@ const loadRedemptionRecords = async () => {
   redemptionLoading.value = true
   redemptionError.value = ''
   try {
-    const response = await userService.listPointsLedger(100, undefined, true)
-    // 只筛选兑换相关的记录
-    redemptionRecords.value = (response.records || []).filter(
-      (r) => r.action === 'redeem_team_seat' || r.action === 'redeem_invite_unlock'
-    )
+    const response = await userService.listRedeemRecords({
+      status: redemptionFilter.value,
+      page: redemptionPagination.value.page,
+      pageSize: redemptionPagination.value.pageSize,
+      days: 90
+    })
+    redemptionRecords.value = response.records || []
+    redemptionPagination.value = response.pagination || redemptionPagination.value
   } catch (err: any) {
     if (err?.response?.status === 401 || err?.response?.status === 403) {
       authService.logout()
@@ -139,6 +149,103 @@ const loadRedemptionRecords = async () => {
     showErrorToast(message)
   } finally {
     redemptionLoading.value = false
+  }
+}
+
+const changeRedemptionFilter = async (filter: 'all' | 'banned' | 'recoverable' | 'recovered') => {
+  if (redemptionFilter.value === filter) return
+  redemptionFilter.value = filter
+  redemptionPagination.value.page = 1
+  await loadRedemptionRecords()
+}
+
+const goToRedemptionPage = async (page: number) => {
+  if (redemptionLoading.value) return
+  if (page < 1 || page > redemptionPagination.value.totalPages || page === redemptionPagination.value.page) return
+  redemptionPagination.value.page = page
+  await loadRedemptionRecords()
+}
+
+const triggerRecover = async (item: PointsRedeemRecord) => {
+  if (!item.canRecover || recoveringEmail.value) return
+  recoveringEmail.value = item.userEmail
+  try {
+    await redemptionCodeService.recoverAccount({ email: item.userEmail })
+    showSuccessToast(`已为 ${item.userEmail} 触发补号`)
+    await loadRedemptionRecords()
+  } catch (err: any) {
+    const message = err?.response?.data?.message || err?.response?.data?.error || '补号失败'
+    showErrorToast(message)
+  } finally {
+    recoveringEmail.value = ''
+  }
+}
+
+const exportRecentRecovery = async () => {
+  try {
+    const all: PointsRedeemRecord[] = []
+    let page = 1
+    const pageSize = 200
+    let totalPages = 1
+
+    while (page <= totalPages) {
+      const response = await userService.listRedeemRecords({
+        status: redemptionFilter.value,
+        page,
+        pageSize,
+        days: 90
+      })
+      all.push(...(response.records || []))
+      totalPages = Math.max(1, Number(response.pagination?.totalPages || 1))
+      page += 1
+    }
+
+    const now = Date.now()
+    const recentMs = 30 * 24 * 60 * 60 * 1000
+    const rows = all.filter(item => {
+      const latestAt = item.latest?.createdAt ? new Date(item.latest.createdAt).getTime() : 0
+      return latestAt > 0 && now - latestAt <= recentMs
+    })
+
+    if (rows.length === 0) {
+      showWarningToast('最近30天没有可导出的补号记录')
+      return
+    }
+
+    const csvHeader = ['用户邮箱', '状态', '原账号', '当前账号', '兑换时间', '补号时间', '补号模式', '失败原因']
+    const csvRows = rows.map(item => ([
+      item.userEmail,
+      getRedemptionStateLabel(item),
+      item.originalAccountEmail || '',
+      item.currentAccountEmail || '',
+      item.redeemedAt || '',
+      item.latest?.createdAt || '',
+      item.latest?.recoveryMode || '',
+      item.latest?.errorMessage || ''
+    ]))
+
+    const escapeCsv = (value: unknown) => {
+      const text = String(value ?? '')
+      const escaped = text.replace(/"/g, '""')
+      return `"${escaped}"`
+    }
+
+    const content = [csvHeader, ...csvRows].map(line => line.map(escapeCsv).join(',')).join('\r\n')
+    const blob = new Blob(['\uFEFF' + content], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const date = new Date()
+    const filename = `recovery-records-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}.csv`
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    showSuccessToast(`已导出 ${rows.length} 条补号记录`)
+  } catch (err: any) {
+    const message = err?.response?.data?.error || '导出失败'
+    showErrorToast(message)
   }
 }
 
@@ -380,19 +487,34 @@ onUnmounted(() => {
           </div>
           <div>
             <h3 class="text-lg font-semibold text-gray-900">{{ t('myOrders.redemption.title') }}</h3>
-            <p class="text-sm text-gray-500">{{ t('myOrders.redemption.summary', { count: redemptionStats.total, points: redemptionStats.totalPoints }) }}</p>
+            <p class="text-sm text-gray-500">
+              共 {{ redemptionStats.total }} 条，封号 {{ redemptionStats.banned }} 条，可补号 {{ redemptionStats.recoverable }} 条，已补号 {{ redemptionStats.recovered }} 条
+            </p>
           </div>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          class="h-9 rounded-xl"
-          :disabled="redemptionLoading"
-          @click="loadRedemptionRecords"
-        >
-          <RefreshCw class="h-4 w-4 mr-2" :class="redemptionLoading ? 'animate-spin' : ''" />
-          {{ t('common.refresh') }}
-        </Button>
+        <div class="flex items-center gap-2">
+          <Button variant="outline" size="sm" class="h-9 rounded-xl" :disabled="redemptionLoading" @click="exportRecentRecovery">
+            <Download class="h-4 w-4 mr-2" />
+            导出最近补号
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            class="h-9 rounded-xl"
+            :disabled="redemptionLoading"
+            @click="loadRedemptionRecords"
+          >
+            <RefreshCw class="h-4 w-4 mr-2" :class="redemptionLoading ? 'animate-spin' : ''" />
+            {{ t('common.refresh') }}
+          </Button>
+        </div>
+      </div>
+
+      <div class="mb-4 flex items-center gap-2 flex-wrap">
+        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'all' ? 'border-black text-black' : ''" @click="changeRedemptionFilter('all')">全部</Button>
+        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'banned' ? 'border-amber-500 text-amber-700' : ''" @click="changeRedemptionFilter('banned')">封号</Button>
+        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'recoverable' ? 'border-blue-500 text-blue-700' : ''" @click="changeRedemptionFilter('recoverable')">可补号</Button>
+        <Button variant="outline" size="sm" class="h-8 rounded-lg" :class="redemptionFilter === 'recovered' ? 'border-green-500 text-green-700' : ''" @click="changeRedemptionFilter('recovered')">已补号</Button>
       </div>
 
       <div v-if="redemptionLoading" class="py-10 text-center text-gray-500">
@@ -419,23 +541,64 @@ onUnmounted(() => {
         <table class="min-w-full text-sm">
           <thead>
             <tr class="text-left text-gray-500 border-b">
-              <th class="py-3 pr-4 font-medium">{{ t('myOrders.redemption.type') }}</th>
-              <th class="py-3 pr-4 font-medium">{{ t('myOrders.redemption.email') }}</th>
-              <th class="py-3 pr-4 font-medium">{{ t('myOrders.redemption.account') }}</th>
-              <th class="py-3 pr-4 font-medium">{{ t('myOrders.redemption.points') }}</th>
-              <th class="py-3 pr-4 font-medium">{{ t('myOrders.redemption.time') }}</th>
+              <th class="py-3 pr-4 font-medium">用户邮箱</th>
+              <th class="py-3 pr-4 font-medium">最新状态</th>
+              <th class="py-3 pr-4 font-medium">当前账号</th>
+              <th class="py-3 pr-4 font-medium">兑换时间</th>
+              <th class="py-3 pr-4 font-medium">补号时间</th>
+              <th class="py-3 pr-4 font-medium">质保截止</th>
+              <th class="py-3 pr-0 font-medium text-right">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="record in redemptionRecords" :key="record.id" class="border-b last:border-b-0 hover:bg-gray-50/60">
-              <td class="py-3 pr-4 text-gray-900">{{ getRedemptionLabel(record) }}</td>
-              <td class="py-3 pr-4 text-gray-900">{{ record.redemptionDetail?.redeemedBy || '-' }}</td>
-              <td class="py-3 pr-4 text-gray-600 text-xs">{{ record.redemptionDetail?.accountEmail || '-' }}</td>
-              <td class="py-3 pr-4 tabular-nums text-amber-600 font-medium">-{{ Math.abs(record.deltaPoints || 0) }}</td>
-              <td class="py-3 pr-4 text-gray-600 whitespace-nowrap">{{ formatDate(record.createdAt) }}</td>
+            <tr v-for="record in redemptionRecords" :key="`${record.originalCodeId}-${record.userEmail}`" class="border-b last:border-b-0 hover:bg-gray-50/60">
+              <td class="py-3 pr-4 text-gray-900">{{ record.userEmail }}</td>
+              <td class="py-3 pr-4">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-full border text-xs font-medium" :class="getRedemptionStateClass(record)">
+                  {{ getRedemptionStateLabel(record) }}
+                </span>
+              </td>
+              <td class="py-3 pr-4 text-gray-600 text-xs">{{ record.currentAccountEmail || record.originalAccountEmail || '-' }}</td>
+              <td class="py-3 pr-4 text-gray-600 whitespace-nowrap">{{ formatDate(record.redeemedAt) }}</td>
+              <td class="py-3 pr-4 text-gray-600 whitespace-nowrap">{{ formatDate(record.latest?.createdAt) }}</td>
+              <td class="py-3 pr-4 text-gray-600 whitespace-nowrap">{{ formatDate(record.windowEndsAt) }}</td>
+              <td class="py-3 pr-0 text-right whitespace-nowrap">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  class="h-8 text-xs border-gray-200 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                  :disabled="!record.canRecover || recoveringEmail === record.userEmail"
+                  @click="triggerRecover(record)"
+                >
+                  <LifeBuoy class="h-3.5 w-3.5 mr-1.5" />
+                  {{ recoveringEmail === record.userEmail ? '补号中...' : '触发补号' }}
+                </Button>
+              </td>
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div v-if="redemptionPagination.totalPages > 1" class="flex items-center justify-between mt-4">
+        <Button
+          variant="outline"
+          class="h-9 rounded-xl"
+          :disabled="redemptionLoading || redemptionPagination.page <= 1"
+          @click="goToRedemptionPage(redemptionPagination.page - 1)"
+        >
+          {{ t('common.previous') }}
+        </Button>
+        <div class="text-sm text-gray-500">
+          第 {{ redemptionPagination.page }} / {{ redemptionPagination.totalPages }} 页 · 共 {{ redemptionPagination.total }} 条
+        </div>
+        <Button
+          variant="outline"
+          class="h-9 rounded-xl"
+          :disabled="redemptionLoading || redemptionPagination.page >= redemptionPagination.totalPages"
+          @click="goToRedemptionPage(redemptionPagination.page + 1)"
+        >
+          {{ t('common.next') }}
+        </Button>
       </div>
     </div>
   </div>
