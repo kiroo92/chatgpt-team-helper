@@ -1604,6 +1604,7 @@ const ensurePurchaseOrdersTable = (database) => {
           quantity INTEGER DEFAULT 1,
           product_key TEXT,
           code_channel TEXT,
+          client_ip TEXT,
           pay_type TEXT,
           status TEXT DEFAULT 'created',
           zpay_oid TEXT,
@@ -1662,6 +1663,7 @@ const ensurePurchaseOrdersTable = (database) => {
         addColumn('quantity', 'quantity INTEGER DEFAULT 1')
         addColumn('product_key', 'product_key TEXT')
         addColumn('code_channel', 'code_channel TEXT')
+        addColumn('client_ip', 'client_ip TEXT')
         addColumn('pay_type', 'pay_type TEXT')
         addColumn('status', 'status TEXT DEFAULT \'created\'')
         addColumn('zpay_oid', 'zpay_oid TEXT')
@@ -1698,6 +1700,7 @@ const ensurePurchaseOrdersTable = (database) => {
   database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_orders_order_no ON purchase_orders(order_no)')
   database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_status_created ON purchase_orders(status, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_email_created ON purchase_orders(email, created_at)')
+  database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_client_ip_created ON purchase_orders(client_ip, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_user_created ON purchase_orders(user_id, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_scene_created ON purchase_orders(order_scene, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_product_created ON purchase_orders(product_key, created_at)')

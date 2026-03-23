@@ -17,15 +17,21 @@ import { requireFeatureEnabled } from '../middleware/feature-flags.js'
 import { getUpstreamSettings } from '../utils/upstream-settings.js'
 import { getUpstreamProviderReadiness } from '../services/upstream-provider.js'
 import { getPublicBaseUrlSettings, resolvePublicBaseUrl } from '../utils/public-base-url.js'
+import { consumeRateLimit, getRequestClientIp } from '../utils/request-guard.js'
 import {
   generateDownstreamPublicCode,
+  getDownstreamOrderItemRefundState,
   listDownstreamOrderItems,
   listReservedRedemptionCodesByOrderNo,
-  releaseReservedCodesByOrderNo
+  releaseReservedCodesByOrderNo,
+  revokeDownstreamOrderItems
 } from '../utils/downstream-order-items.js'
 
 const router = express.Router()
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production'
+const ORDER_BIND_TOKEN_SECRET = `${JWT_SECRET}::purchase-bind`
+const ORDER_BIND_TOKEN_SCOPE = 'purchase_order_bind'
+const ORDER_BIND_TOKEN_EXPIRES_IN = String(process.env.PURCHASE_ORDER_BIND_TOKEN_EXPIRES_IN || '10m').trim() || '10m'
 
 router.use(requireFeatureEnabled('payment'))
 
@@ -51,27 +57,6 @@ const safeSnippet = (value, limit = 420) => {
 const toInt = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10)
   return Number.isFinite(parsed) ? parsed : fallback
-}
-
-const normalizeIp = (value) => {
-  const ip = String(value || '').trim()
-  if (!ip) return ip
-  if (ip === '::1') return '127.0.0.1'
-  const match = ip.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/)
-  if (match) return match[1]
-  return ip
-}
-
-const getClientIp = (req) => {
-  const cfConnectingIp = req.headers['cf-connecting-ip']
-  if (typeof cfConnectingIp === 'string' && cfConnectingIp.trim()) {
-    return normalizeIp(cfConnectingIp.trim())
-  }
-  const forwardedFor = req.headers['x-forwarded-for']
-  if (typeof forwardedFor === 'string' && forwardedFor.length > 0) {
-    return normalizeIp(forwardedFor.split(',')[0].trim())
-  }
-  return normalizeIp(req.ip)
 }
 
 const md5 = (value) => crypto.createHash('md5').update(String(value), 'utf8').digest('hex')
@@ -627,6 +612,86 @@ const getUserIdFromAuthorization = (req) => {
     const id = decoded?.id
     const userId = Number(id)
     return Number.isFinite(userId) && userId > 0 ? userId : null
+  } catch {
+    return null
+  }
+}
+
+const getPurchaseCreateRateLimitWindowMs = () => Math.max(60 * 1000, toInt(process.env.PURCHASE_CREATE_RATE_LIMIT_WINDOW_MS, 10 * 60 * 1000))
+const getPurchaseCreateRateLimitMaxPerIp = () => Math.max(1, toInt(process.env.PURCHASE_CREATE_RATE_LIMIT_MAX_PER_IP, 20))
+const getPurchasePendingOrderLimitPerEmail = () => Math.max(1, toInt(process.env.PURCHASE_PENDING_ORDER_LIMIT_PER_EMAIL, 3))
+const getPurchasePendingOrderLimitPerIp = () => Math.max(1, toInt(process.env.PURCHASE_PENDING_ORDER_LIMIT_PER_IP, 8))
+
+const countPendingOrdersByEmail = (db, { email, orderScene }) => {
+  const normalizedEmail = normalizeEmail(email)
+  if (!db || !normalizedEmail) return 0
+
+  const result = db.exec(
+    `
+      SELECT COUNT(*)
+      FROM purchase_orders
+      WHERE paid_at IS NULL
+        AND status IN ('created', 'pending_payment')
+        AND order_scene = ?
+        AND LOWER(TRIM(email)) = ?
+    `,
+    [normalizeOrderScene(orderScene), normalizedEmail]
+  )
+
+  return Number(result[0]?.values?.[0]?.[0] || 0)
+}
+
+const countPendingOrdersByClientIp = (db, { clientIp, orderScene }) => {
+  const normalizedClientIp = String(clientIp || '').trim()
+  if (!db || !normalizedClientIp) return 0
+
+  const result = db.exec(
+    `
+      SELECT COUNT(*)
+      FROM purchase_orders
+      WHERE paid_at IS NULL
+        AND status IN ('created', 'pending_payment')
+        AND order_scene = ?
+        AND TRIM(COALESCE(client_ip, '')) = ?
+    `,
+    [normalizeOrderScene(orderScene), normalizedClientIp]
+  )
+
+  return Number(result[0]?.values?.[0]?.[0] || 0)
+}
+
+const buildOrderBindToken = (order) => {
+  const orderNo = String(order?.orderNo || '').trim()
+  const email = normalizeEmail(order?.email)
+  if (!orderNo || !email) return ''
+
+  return jwt.sign(
+    {
+      scope: ORDER_BIND_TOKEN_SCOPE,
+      orderNo,
+      email
+    },
+    ORDER_BIND_TOKEN_SECRET,
+    {
+      expiresIn: ORDER_BIND_TOKEN_EXPIRES_IN,
+      algorithm: 'HS256'
+    }
+  )
+}
+
+const verifyOrderBindToken = (token) => {
+  const rawToken = String(token || '').trim()
+  if (!rawToken) return null
+
+  try {
+    const decoded = jwt.verify(rawToken, ORDER_BIND_TOKEN_SECRET, { algorithms: ['HS256'] })
+    if (decoded?.scope !== ORDER_BIND_TOKEN_SCOPE) return null
+
+    const orderNo = String(decoded?.orderNo || '').trim()
+    const email = normalizeEmail(decoded?.email)
+    if (!orderNo || !email) return null
+
+    return { orderNo, email }
   } catch {
     return null
   }
@@ -1507,12 +1572,24 @@ router.post('/orders', async (req, res) => {
   const productKey = rawProductKey == null || String(rawProductKey).trim() === '' ? '' : normalizeProductKey(rawProductKey)
   const requestedOrderType = parseOrderType(req.body?.orderType || req.body?.order_type)
   const userIdFromToken = getUserIdFromAuthorization(req)
+  const clientIp = getRequestClientIp(req)
 
   if (!email) return res.status(400).json({ error: '请输入邮箱地址' })
   if (!EMAIL_REGEX.test(email)) return res.status(400).json({ error: '请输入有效的邮箱地址' })
   if (!['alipay', 'wxpay'].includes(payType)) return res.status(400).json({ error: '请选择支付方式' })
   if (rawProductKey != null && String(rawProductKey).trim() && !productKey) {
     return res.status(400).json({ error: 'productKey 不合法' })
+  }
+
+  const createRateLimit = consumeRateLimit({
+    key: clientIp ? `purchase:create:${clientIp}` : '',
+    limit: getPurchaseCreateRateLimitMaxPerIp(),
+    windowMs: getPurchaseCreateRateLimitWindowMs()
+  })
+  if (!createRateLimit.ok) {
+    const retryAfterSeconds = Math.max(1, Math.ceil(Number(createRateLimit.retryAfterMs || 0) / 1000))
+    res.set('Retry-After', String(retryAfterSeconds))
+    return res.status(429).json({ error: '下单过于频繁，请稍后再试' })
   }
 
   const { pid, key, baseUrl } = await getZpayConfig()
@@ -1528,6 +1605,22 @@ router.post('/orders', async (req, res) => {
 
     const reservation = await withLocks(['purchase'], async () => {
       cleanupExpiredOrders(db, { expireMinutes: getPurchaseOrderExpireMinutes() })
+
+      const pendingOrdersForEmail = countPendingOrdersByEmail(db, {
+        email,
+        orderScene: ORDER_SCENE_RETAIL
+      })
+      if (pendingOrdersForEmail >= getPurchasePendingOrderLimitPerEmail()) {
+        return { ok: false, status: 429, error: '当前邮箱待支付订单过多，请先完成支付或等待旧订单过期' }
+      }
+
+      const pendingOrdersForClientIp = countPendingOrdersByClientIp(db, {
+        clientIp,
+        orderScene: ORDER_SCENE_RETAIL
+      })
+      if (pendingOrdersForClientIp >= getPurchasePendingOrderLimitPerIp()) {
+        return { ok: false, status: 429, error: '当前网络待支付订单过多，请稍后再试' }
+      }
 
       const { byKey: channelsByKey } = await getChannels(db)
       const upstreamSettings = await getUpstreamSettings(db)
@@ -1590,9 +1683,9 @@ router.post('/orders', async (req, res) => {
       db.run(
         `
           INSERT INTO purchase_orders (
-            user_id, order_no, email, product_name, amount, service_days, order_type, order_scene, product_key, code_channel, pay_type, status,
+            user_id, order_no, email, product_name, amount, service_days, order_type, order_scene, product_key, code_channel, client_ip, pay_type, status,
             quantity, code_id, code, code_account_email, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
         `,
         [
           userIdFromToken,
@@ -1605,6 +1698,7 @@ router.post('/orders', async (req, res) => {
           ORDER_SCENE_RETAIL,
           product.productKey,
           lockedChannel,
+          clientIp || null,
           payType,
           1,
           reserved.codeId,
@@ -1640,7 +1734,7 @@ router.post('/orders', async (req, res) => {
       return_url: notifyUrl,
       name: purchasePlan.productName,
       money: purchasePlan.amount,
-      clientip: getClientIp(req),
+      clientip: clientIp,
       device: 'pc',
       param: `email=${email}`
     }
@@ -1835,7 +1929,7 @@ router.all('/notify', async (req, res) => {
 	const outTradeNo = String(payload.out_trade_no || '').trim()
 	const tradeNo = String(payload.trade_no || '').trim()
 	const orderNo = outTradeNo || String(payload.order_no || '').trim()
-	const ip = getClientIp(req)
+	const ip = getRequestClientIp(req)
 	const summary = summarizeZpayNotifyPayload(payload)
 	const ua = safeSnippet(req.headers['user-agent'] || '', 180)
 	const originalUrl = safeSnippet(req.originalUrl || '', 420)
@@ -1966,6 +2060,7 @@ router.get('/orders/:orderNo', async (req, res) => {
     const refund = order.paidAt && !isNoWarrantyOrder
       ? computeRefund({ amount: order.amount, startAt: order.createdAt, serviceDays: order.serviceDays })
       : { refundable: false, refundAmount: '0.00', reason: isNoWarrantyOrder ? 'no_warranty' : 'unpaid' }
+    const bindToken = order.userId == null ? buildOrderBindToken(order) : ''
 
     res.json({
       order: {
@@ -1990,6 +2085,7 @@ router.get('/orders/:orderNo', async (req, res) => {
         refundMessage: order.refundMessage,
         emailSentAt: order.emailSentAt
       },
+      bindToken: bindToken || null,
       refundable: refund.refundable,
       computedRefundAmount: refund.refundAmount,
       refundMeta: refund
@@ -2134,6 +2230,7 @@ router.post('/my/orders/bind', authenticateToken, async (req, res) => {
   }
 
   const requestedOrderNo = String(req.body?.orderNo || '').trim()
+  const bindToken = String(req.body?.bindToken || '').trim()
   if (!requestedOrderNo) {
     return res.status(400).json({ error: '缺少订单号' })
   }
@@ -2162,6 +2259,17 @@ router.post('/my/orders/bind', authenticateToken, async (req, res) => {
 
       if (boundUserId === Number(userId)) {
         return { ok: true, message: '订单已关联', order: current }
+      }
+
+      const verifiedBindPayload = verifyOrderBindToken(bindToken)
+      if (!verifiedBindPayload) {
+        return { ok: false, status: 400, error: '绑定凭证无效或已过期，请重新查询订单后再试' }
+      }
+      if (verifiedBindPayload.orderNo !== resolvedOrderNo) {
+        return { ok: false, status: 400, error: '绑定凭证与订单不匹配，请重新查询订单后再试' }
+      }
+      if (verifiedBindPayload.email !== normalizeEmail(current.email)) {
+        return { ok: false, status: 400, error: '绑定凭证与订单不匹配，请重新查询订单后再试' }
       }
 
       db.run(
@@ -2303,13 +2411,42 @@ router.post('/admin/orders/:orderNo/refund', async (req, res) => {
 
   try {
     const db = await getDatabase()
-    const result = await withLocks([`purchase:${orderNo}`], async () => {
+    const initialOrder = fetchOrder(db, orderNo)
+    if (!initialOrder) return res.status(404).json({ error: '订单不存在' })
+
+    const downstreamRefundState = initialOrder.orderScene === ORDER_SCENE_DOWNSTREAM
+      ? getDownstreamOrderItemRefundState(db, orderNo)
+      : null
+
+    const refundLockKeys = ['purchase', `purchase:${orderNo}`]
+    if (downstreamRefundState?.items?.length) {
+      for (const item of downstreamRefundState.items) {
+        if (item.publicCode) refundLockKeys.push(`downstream-public-code:${item.publicCode}`)
+        if (item.realCode) {
+          if (item.publicCode) refundLockKeys.push(`upstream-redeem:${item.publicCode}`)
+          refundLockKeys.push(`redemption-code:${item.realCode}`)
+        }
+      }
+    }
+
+    const result = await withLocks(Array.from(new Set(refundLockKeys)), async () => {
       const order = fetchOrder(db, orderNo)
       if (!order) return { ok: false, status: 404, error: '订单不存在' }
       if (order.status !== 'paid') return { ok: false, status: 400, error: '订单未支付或状态异常' }
       if (order.refundedAt || order.status === 'refunded') return { ok: false, status: 400, error: '订单已退款' }
       if (isNoWarrantyOrderType(order.orderType)) {
         return { ok: false, status: 400, error: '无质保订单不支持退款' }
+      }
+
+      if (order.orderScene === ORDER_SCENE_DOWNSTREAM) {
+        const currentRefundState = getDownstreamOrderItemRefundState(db, orderNo)
+        if (currentRefundState.redeemedCount > 0) {
+          return {
+            ok: false,
+            status: 400,
+            error: `下游订单已有 ${currentRefundState.redeemedCount} 个卡密被兑换，不能自动退款`
+          }
+        }
       }
 
       const refund = computeRefund({ amount: order.amount, startAt: order.createdAt, serviceDays: order.serviceDays })
@@ -2346,6 +2483,19 @@ router.post('/admin/orders/:orderNo/refund', async (req, res) => {
       }
 
       const successMsg = refundResult?.data?.msg ? String(refundResult.data.msg) : '退款成功'
+      if (order.orderScene === ORDER_SCENE_DOWNSTREAM) {
+        const revokeResult = revokeDownstreamOrderItems(db, orderNo)
+        if (!revokeResult.ok) {
+          return {
+            ok: false,
+            status: 400,
+            error: `下游订单已有 ${revokeResult.blockedRedeemedCount || 0} 个卡密被兑换，不能自动退款`,
+            refund
+          }
+        }
+        releaseReservedCodesByOrderNo(db, orderNo)
+      }
+
       db.run(
         `
           UPDATE purchase_orders
@@ -2353,6 +2503,8 @@ router.post('/admin/orders/:orderNo/refund', async (req, res) => {
               refunded_at = DATETIME('now', 'localtime'),
               refund_amount = ?,
               refund_message = ?,
+              invite_status = CASE WHEN order_scene = 'downstream' THEN '已退款' ELSE invite_status END,
+              redeem_error = CASE WHEN order_scene = 'downstream' THEN NULL ELSE redeem_error END,
               updated_at = DATETIME('now', 'localtime')
           WHERE order_no = ?
         `,

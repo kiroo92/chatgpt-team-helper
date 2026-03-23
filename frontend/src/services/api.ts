@@ -630,6 +630,7 @@ export interface PurchaseOrder {
 
 export interface PurchaseOrderQueryResponse {
   order: PurchaseOrder
+  bindToken?: string | null
   refundable: boolean
   computedRefundAmount: string
   refundMeta?: any
@@ -2457,6 +2458,7 @@ export interface DownstreamMeta {
   payAlipayEnabled: boolean
   payWxpayEnabled: boolean
   payMethods: Array<'alipay' | 'wxpay'>
+  maxOrderQuantity?: number
   availableCount: number
 }
 
@@ -2552,8 +2554,8 @@ export const purchaseService = {
     return response.data
   },
 
-  async myBindOrder(orderNo: string): Promise<{ message: string; order: PurchaseOrder }> {
-    const response = await api.post('/purchase/my/orders/bind', { orderNo })
+  async myBindOrder(orderNo: string, bindToken: string): Promise<{ message: string; order: PurchaseOrder }> {
+    const response = await api.post('/purchase/my/orders/bind', { orderNo, bindToken })
     return response.data
   },
 }

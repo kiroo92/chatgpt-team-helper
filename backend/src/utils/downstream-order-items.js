@@ -201,3 +201,102 @@ export const getDownstreamOrderItemByPublicCode = (db, publicCode) => {
     orderEmail: row[16] ? String(row[16]).trim() : ''
   }
 }
+
+export const getDownstreamOrderItemRefundState = (db, orderNo) => {
+  const normalizedOrderNo = normalizeOrderNo(orderNo)
+  if (!db || !normalizedOrderNo) {
+    return { total: 0, redeemedCount: 0, items: [] }
+  }
+
+  const result = db.exec(
+    `
+      SELECT doi.id,
+             doi.code_id,
+             doi.public_code,
+             doi.redeemed_at,
+             rc.is_redeemed,
+             rc.redeemed_at,
+             rc.code
+      FROM downstream_order_items doi
+      LEFT JOIN redemption_codes rc
+        ON rc.id = doi.code_id
+      WHERE doi.order_no = ?
+      ORDER BY doi.id ASC
+    `,
+    [normalizedOrderNo]
+  )
+
+  const rows = result[0]?.values || []
+  const items = rows.map(row => {
+    const itemRedeemedAt = row[3] || null
+    const codeRedeemedAt = row[5] || null
+    const isCodeRedeemed = Number(row[4] || 0) === 1
+    return {
+      id: Number(row[0]),
+      codeId: Number(row[1]),
+      publicCode: row[2] ? String(row[2]) : '',
+      redeemedAt: itemRedeemedAt || codeRedeemedAt,
+      isRedeemed: Boolean(itemRedeemedAt || codeRedeemedAt || isCodeRedeemed),
+      realCode: row[6] ? String(row[6]) : ''
+    }
+  })
+
+  return {
+    total: items.length,
+    redeemedCount: items.filter(item => item.isRedeemed).length,
+    items
+  }
+}
+
+export const revokeDownstreamOrderItems = (db, orderNo) => {
+  const normalizedOrderNo = normalizeOrderNo(orderNo)
+  if (!db || !normalizedOrderNo) {
+    return { ok: true, revokedCount: 0, blockedRedeemedCount: 0 }
+  }
+
+  const state = getDownstreamOrderItemRefundState(db, normalizedOrderNo)
+  if (state.redeemedCount > 0) {
+    return {
+      ok: false,
+      error: 'downstream_code_redeemed',
+      blockedRedeemedCount: state.redeemedCount,
+      revokedCount: 0
+    }
+  }
+
+  const codeIds = state.items
+    .map(item => Number(item.codeId || 0))
+    .filter(codeId => codeId > 0)
+
+  if (codeIds.length > 0) {
+    const placeholders = codeIds.map(() => '?').join(', ')
+    db.run(
+      `
+        UPDATE redemption_codes
+        SET is_downstream_sold = 0,
+            downstream_sold_at = NULL,
+            reserved_for_order_no = NULL,
+            reserved_for_order_email = NULL,
+            reserved_at = NULL,
+            updated_at = DATETIME('now', 'localtime')
+        WHERE id IN (${placeholders})
+          AND COALESCE(is_redeemed, 0) = 0
+      `,
+      codeIds
+    )
+  }
+
+  db.run(
+    `
+      DELETE FROM downstream_order_items
+      WHERE order_no = ?
+    `,
+    [normalizedOrderNo]
+  )
+
+  return {
+    ok: true,
+    revokedCount: state.items.length,
+    blockedRedeemedCount: 0
+  }
+}

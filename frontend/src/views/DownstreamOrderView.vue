@@ -191,7 +191,7 @@ const showQrImage = computed(() => {
 const showDeliveredItems = computed(() => {
   const order = result.value?.order
   if (!order) return false
-  return ['paid', 'refunded'].includes(order.status) && order.items.length > 0
+  return order.status === 'paid' && order.items.length > 0
 })
 const redeemedCount = computed(() => (result.value?.order.items || []).filter(item => item.status === 'redeemed').length)
 const deliveredCodes = computed(() => (result.value?.order.items || []).map(item => item.publicCode).filter(Boolean))

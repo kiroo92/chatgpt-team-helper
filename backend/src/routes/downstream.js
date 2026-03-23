@@ -7,6 +7,7 @@ import { requireFeatureEnabled } from '../middleware/feature-flags.js'
 import { getDownstreamSaleSettings } from '../utils/downstream-sale-settings.js'
 import { getZpaySettings } from '../utils/zpay-settings.js'
 import { resolvePublicBaseUrl } from '../utils/public-base-url.js'
+import { consumeRateLimit, getRequestClientIp } from '../utils/request-guard.js'
 import {
   cleanupExpiredOrders,
   fetchOrder,
@@ -30,7 +31,6 @@ const DOWNSTREAM_ORDER_TYPE = 'warranty'
 const SUPPLIER_STATUS_INVALID = 'invalid'
 const SUPPLIER_STATUS_USED = 'used'
 const SUPPLIER_STATUS_PROCESSING = 'processing'
-const MAX_DOWNSTREAM_ORDER_QUANTITY = 10000
 
 const normalizeEmail = (value) => String(value ?? '').trim().toLowerCase()
 
@@ -71,11 +71,55 @@ const multiplyMoney = (value, quantity) => {
 }
 
 const parseQuantity = (value) => {
+  const maxQuantity = Math.max(1, toInt(process.env.DOWNSTREAM_MAX_ORDER_QUANTITY, 20))
   const parsed = Number.parseInt(String(value ?? ''), 10)
   if (!Number.isFinite(parsed)) return null
   if (parsed <= 0) return null
-  if (parsed > MAX_DOWNSTREAM_ORDER_QUANTITY) return null
+  if (parsed > maxQuantity) return null
   return parsed
+}
+
+const getDownstreamCreateRateLimitWindowMs = () => Math.max(60 * 1000, toInt(process.env.DOWNSTREAM_CREATE_RATE_LIMIT_WINDOW_MS, 10 * 60 * 1000))
+const getDownstreamCreateRateLimitMaxPerIp = () => Math.max(1, toInt(process.env.DOWNSTREAM_CREATE_RATE_LIMIT_MAX_PER_IP, 10))
+const getDownstreamPendingOrderLimitPerEmail = () => Math.max(1, toInt(process.env.DOWNSTREAM_PENDING_ORDER_LIMIT_PER_EMAIL, 3))
+const getDownstreamPendingOrderLimitPerIp = () => Math.max(1, toInt(process.env.DOWNSTREAM_PENDING_ORDER_LIMIT_PER_IP, 5))
+
+const countPendingDownstreamOrdersByEmail = (db, email) => {
+  const normalizedEmail = normalizeEmail(email)
+  if (!db || !normalizedEmail) return 0
+
+  const result = db.exec(
+    `
+      SELECT COUNT(*)
+      FROM purchase_orders
+      WHERE paid_at IS NULL
+        AND status IN ('created', 'pending_payment')
+        AND order_scene = ?
+        AND LOWER(TRIM(email)) = ?
+    `,
+    [ORDER_SCENE_DOWNSTREAM, normalizedEmail]
+  )
+
+  return Number(result[0]?.values?.[0]?.[0] || 0)
+}
+
+const countPendingDownstreamOrdersByClientIp = (db, clientIp) => {
+  const normalizedClientIp = String(clientIp || '').trim()
+  if (!db || !normalizedClientIp) return 0
+
+  const result = db.exec(
+    `
+      SELECT COUNT(*)
+      FROM purchase_orders
+      WHERE paid_at IS NULL
+        AND status IN ('created', 'pending_payment')
+        AND order_scene = ?
+        AND TRIM(COALESCE(client_ip, '')) = ?
+    `,
+    [ORDER_SCENE_DOWNSTREAM, normalizedClientIp]
+  )
+
+  return Number(result[0]?.values?.[0]?.[0] || 0)
 }
 
 const safeSnippet = (value, limit = 420) => {
@@ -90,27 +134,6 @@ const safeSnippet = (value, limit = 420) => {
   const normalized = raw.replace(/\s+/g, ' ').trim()
   if (normalized.length <= limit) return normalized
   return `${normalized.slice(0, limit)}...`
-}
-
-const normalizeIp = (value) => {
-  const ip = String(value || '').trim()
-  if (!ip) return ip
-  if (ip === '::1') return '127.0.0.1'
-  const match = ip.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/)
-  if (match) return match[1]
-  return ip
-}
-
-const getClientIp = (req) => {
-  const cfConnectingIp = req.headers['cf-connecting-ip']
-  if (typeof cfConnectingIp === 'string' && cfConnectingIp.trim()) {
-    return normalizeIp(cfConnectingIp.trim())
-  }
-  const forwardedFor = req.headers['x-forwarded-for']
-  if (typeof forwardedFor === 'string' && forwardedFor.length > 0) {
-    return normalizeIp(forwardedFor.split(',')[0].trim())
-  }
-  return normalizeIp(req.ip)
 }
 
 const md5 = (value) => crypto.createHash('md5').update(String(value), 'utf8').digest('hex')
@@ -312,6 +335,7 @@ router.get('/meta', async (req, res) => {
         payAlipayEnabled: settings.payAlipayEnabled,
         payWxpayEnabled: settings.payWxpayEnabled,
         payMethods: settings.payMethods,
+        maxOrderQuantity: Math.max(1, toInt(process.env.DOWNSTREAM_MAX_ORDER_QUANTITY, 20)),
         availableCount: 0
       })
     }
@@ -330,6 +354,7 @@ router.get('/meta', async (req, res) => {
       payAlipayEnabled: settings.payAlipayEnabled,
       payWxpayEnabled: settings.payWxpayEnabled,
       payMethods: settings.payMethods,
+      maxOrderQuantity: Math.max(1, toInt(process.env.DOWNSTREAM_MAX_ORDER_QUANTITY, 20)),
       availableCount: getDownstreamAvailableCodeCount(db)
     })
   } catch (error) {
@@ -342,11 +367,23 @@ router.post('/orders', async (req, res) => {
   const email = normalizeEmail(req.body?.email)
   const payType = String(req.body?.type || '').trim().toLowerCase()
   const quantity = parseQuantity(req.body?.quantity)
+  const clientIp = getRequestClientIp(req)
 
   if (!email) return res.status(400).json({ error: '请输入邮箱地址' })
   if (!EMAIL_REGEX.test(email)) return res.status(400).json({ error: '请输入有效的邮箱地址' })
   if (!['alipay', 'wxpay'].includes(payType)) return res.status(400).json({ error: '支付方式不支持' })
   if (!quantity) return res.status(400).json({ error: '请输入有效的购买数量' })
+
+  const createRateLimit = consumeRateLimit({
+    key: clientIp ? `downstream:create:${clientIp}` : '',
+    limit: getDownstreamCreateRateLimitMaxPerIp(),
+    windowMs: getDownstreamCreateRateLimitWindowMs()
+  })
+  if (!createRateLimit.ok) {
+    const retryAfterSeconds = Math.max(1, Math.ceil(Number(createRateLimit.retryAfterMs || 0) / 1000))
+    res.set('Retry-After', String(retryAfterSeconds))
+    return res.status(429).json({ error: '下单过于频繁，请稍后再试' })
+  }
 
   const orderNo = generateOrderNo()
 
@@ -379,6 +416,16 @@ router.post('/orders', async (req, res) => {
         saveDatabase()
       }
 
+      const pendingOrdersForEmail = countPendingDownstreamOrdersByEmail(db, email)
+      if (pendingOrdersForEmail >= getDownstreamPendingOrderLimitPerEmail()) {
+        return { ok: false, status: 429, error: '当前邮箱待支付订单过多，请先完成支付或等待旧订单过期' }
+      }
+
+      const pendingOrdersForClientIp = countPendingDownstreamOrdersByClientIp(db, clientIp)
+      if (pendingOrdersForClientIp >= getDownstreamPendingOrderLimitPerIp()) {
+        return { ok: false, status: 429, error: '当前网络待支付订单过多，请稍后再试' }
+      }
+
       const reserved = reserveDownstreamCodes(db, { orderNo, email, quantity })
       if (!reserved) {
         return { ok: false, status: 409, error: '可用库存不足，请稍后再试' }
@@ -387,9 +434,9 @@ router.post('/orders', async (req, res) => {
       db.run(
         `
           INSERT INTO purchase_orders (
-            order_no, email, product_name, amount, service_days, order_type, order_scene, quantity, product_key, code_channel, pay_type, status,
+            order_no, email, product_name, amount, service_days, order_type, order_scene, quantity, product_key, code_channel, client_ip, pay_type, status,
             created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
         `,
         [
           orderNo,
@@ -402,6 +449,7 @@ router.post('/orders', async (req, res) => {
           quantity,
           DOWNSTREAM_PRODUCT_KEY,
           null,
+          clientIp || null,
           payType
         ]
       )
@@ -423,7 +471,7 @@ router.post('/orders', async (req, res) => {
       return_url: notifyUrl,
       name: quantity > 1 ? `${downstreamSettings.productName} x${quantity}` : downstreamSettings.productName,
       money: totalAmount,
-      clientip: getClientIp(req),
+      clientip: clientIp,
       device: 'pc',
       param: `scene=downstream&email=${email}&quantity=${quantity}`
     }
@@ -573,7 +621,7 @@ router.get('/orders/:orderNo', async (req, res) => {
       }
     }
 
-    const items = order.status === 'paid' || order.status === 'refunded'
+    const items = order.status === 'paid'
       ? listDownstreamOrderItems(db, resolvedOrderNo)
       : []
 

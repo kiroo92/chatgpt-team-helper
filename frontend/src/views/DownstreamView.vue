@@ -89,6 +89,7 @@
                 <div class="text-right text-sm text-[#86868b]">
                   <p>数量：{{ normalizedQuantity }}</p>
                   <p>库存：{{ meta.availableCount }}</p>
+                  <p>单笔上限：{{ maxOrderQuantity }}</p>
                 </div>
               </div>
             </div>
@@ -165,6 +166,8 @@ const normalizedQuantity = computed(() => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1
 })
 
+const maxOrderQuantity = computed(() => Math.max(1, Number(meta.value?.maxOrderQuantity || 20)))
+
 const totalAmount = computed(() => {
   const unit = Number(meta.value?.amount || 0)
   if (!Number.isFinite(unit) || unit <= 0) return '0.00'
@@ -183,6 +186,9 @@ const quantityError = computed(() => {
   const parsed = Number.parseInt(raw || '0', 10)
   if (!raw) return '请输入购买数量'
   if (!Number.isFinite(parsed) || parsed <= 0) return '请输入大于 0 的整数数量'
+  if (parsed > maxOrderQuantity.value) {
+    return `单笔最多购买 ${maxOrderQuantity.value} 个`
+  }
   if (parsed > Number(meta.value?.availableCount || 0) && !isSoldOut.value) {
     return '数量超过当前可售库存'
   }
@@ -196,8 +202,15 @@ const loadMeta = async () => {
     if (availablePayTypes.value.length > 0 && !availablePayTypes.value.includes(selectedPayType.value)) {
       selectedPayType.value = availablePayTypes.value[0] || 'alipay'
     }
-    if (Number(meta.value?.availableCount || 0) > 0 && normalizedQuantity.value > Number(meta.value?.availableCount || 0)) {
-      quantityInput.value = String(meta.value?.availableCount || 1)
+    const maxAllowedQuantity = Math.max(
+      1,
+      Math.min(
+        Number(meta.value?.availableCount || 1),
+        Number(meta.value?.maxOrderQuantity || 20)
+      )
+    )
+    if (normalizedQuantity.value > maxAllowedQuantity) {
+      quantityInput.value = String(maxAllowedQuantity)
     }
   } catch (error: any) {
     errorMessage.value = error?.response?.data?.error || '加载下游售码信息失败，请稍后重试'

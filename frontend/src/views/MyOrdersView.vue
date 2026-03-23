@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { authService, purchaseService, type PurchaseOrder, type PurchaseMyOrdersParams } from '@/services/api'
 import { formatShanghaiDate } from '@/lib/datetime'
+import { EMAIL_REGEX } from '@/lib/validation'
 import { useAppConfigStore } from '@/stores/appConfig'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -22,6 +23,7 @@ const paginationMeta = ref({ page: 1, pageSize: 20, total: 0 })
 const totalPages = computed(() => Math.max(1, Math.ceil(paginationMeta.value.total / paginationMeta.value.pageSize)))
 
 const bindOrderNo = ref('')
+const bindEmail = ref('')
 const binding = ref(false)
 
 const dateFormatOptions = computed(() => ({
@@ -95,24 +97,40 @@ const goToPage = (page: number) => {
 
 const bindOrder = async () => {
   const orderNo = bindOrderNo.value.trim()
+  const normalizedEmail = bindEmail.value.trim().toLowerCase()
   if (!orderNo) {
     showWarningToast('请输入订单号')
     return
   }
+  if (!normalizedEmail) {
+    showWarningToast('请输入下单邮箱')
+    return
+  }
+  if (!EMAIL_REGEX.test(normalizedEmail)) {
+    showWarningToast('请输入有效的邮箱地址')
+    return
+  }
   binding.value = true
   try {
-    await purchaseService.myBindOrder(orderNo)
+    const queriedOrder = await purchaseService.getOrder(orderNo, normalizedEmail)
+    const bindToken = String(queriedOrder.bindToken || '').trim()
+    if (!bindToken) {
+      throw new Error('未获取到绑定凭证，请重新查询订单后再试')
+    }
+
+    await purchaseService.myBindOrder(queriedOrder.order.orderNo, bindToken)
     showSuccessToast('关联成功')
     bindOrderNo.value = ''
+    bindEmail.value = ''
     paginationMeta.value.page = 1
     await loadOrders()
   } catch (err: any) {
-    if (err?.response?.status === 401 || err?.response?.status === 403) {
+    if (err?.response?.status === 401) {
       authService.logout()
       router.push('/login')
       return
     }
-    const message = err?.response?.data?.error || '关联失败'
+    const message = err?.response?.data?.error || err?.message || '关联失败'
     showErrorToast(message)
   } finally {
     binding.value = false
@@ -216,7 +234,7 @@ onUnmounted(() => {
       <div class="flex flex-col lg:flex-row lg:items-center gap-4 justify-between">
         <div class="space-y-1">
           <h3 class="text-lg font-semibold text-gray-900">关联订单</h3>
-          <p class="text-sm text-gray-500">输入订单号，将历史订单绑定到当前账号后即可在此查看。</p>
+          <p class="text-sm text-gray-500">输入订单号和下单邮箱，将历史订单绑定到当前账号后即可在此查看。</p>
         </div>
 
         <div class="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
@@ -224,6 +242,13 @@ onUnmounted(() => {
             v-model="bindOrderNo"
             class="h-10 rounded-xl bg-white"
             placeholder="请输入订单号"
+            :disabled="binding"
+            @keydown.enter.prevent="bindOrder"
+          />
+          <Input
+            v-model="bindEmail"
+            class="h-10 rounded-xl bg-white"
+            placeholder="请输入下单邮箱"
             :disabled="binding"
             @keydown.enter.prevent="bindOrder"
           />

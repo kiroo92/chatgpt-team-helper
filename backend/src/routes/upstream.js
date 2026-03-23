@@ -90,11 +90,12 @@ const buildDownstreamPublicCodeCheckResponse = ({ item, requestedChannel, channe
     }
   }
 
-  if (!['paid', 'refunded'].includes(String(item.orderStatus || '').trim())) {
+  const orderStatus = String(item.orderStatus || '').trim()
+  if (orderStatus !== 'paid') {
     return {
       ok: false,
       status: 'invalid',
-      message: DOWNSTREAM_MAPPING_ORDER_UNPAID_MESSAGE,
+      message: orderStatus === 'refunded' ? '映射码已失效' : DOWNSTREAM_MAPPING_ORDER_UNPAID_MESSAGE,
       data: {
         available: false,
         channel: actualChannel
@@ -351,8 +352,14 @@ router.post('/cards/redeem', async (req, res) => {
         if (!item.realCode) {
           return { ok: false, status: 'invalid', message: '映射码对应真实卡密不存在', retryable: false }
         }
-        if (!['paid', 'refunded'].includes(String(item.orderStatus || '').trim())) {
-          return { ok: false, status: 'invalid', message: DOWNSTREAM_MAPPING_ORDER_UNPAID_MESSAGE, retryable: false }
+        const orderStatus = String(item.orderStatus || '').trim()
+        if (orderStatus !== 'paid') {
+          return {
+            ok: false,
+            status: 'invalid',
+            message: orderStatus === 'refunded' ? '映射码已失效' : DOWNSTREAM_MAPPING_ORDER_UNPAID_MESSAGE,
+            retryable: false
+          }
         }
         if (item.supplierStatus === 'invalid') {
           return { ok: false, status: 'invalid', message: '卡密已失效', retryable: false }
