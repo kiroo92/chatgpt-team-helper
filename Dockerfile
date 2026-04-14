@@ -34,10 +34,11 @@ COPY backend/ ./backend/
 # 多阶段构建 - 阶段3：最终运行镜像
 FROM node:20-alpine
 
-# 安装 nginx、supervisor 以及小红书订单同步所需的运行依赖（Chromium、Chromedriver、Python等）
+# 安装 nginx、supervisor 以及 AutoTeam / Playwright 运行所需依赖
 RUN apk add --no-cache \
     nginx \
     supervisor \
+    chromium \
     nss \
     harfbuzz \
     freetype \

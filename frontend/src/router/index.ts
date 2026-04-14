@@ -18,6 +18,7 @@ import MainLayout from '../views/MainLayout.vue'
 import AccountsView from '../views/AccountsView.vue'
 import UserManagementView from '../views/UserManagementView.vue'
 import SettingsView from '../views/SettingsView.vue'
+import AutoTeamView from '../views/AutoTeamView.vue'
 import RedemptionCodesView from '../views/RedemptionCodesView.vue'
 import AppleShowcase from '../views/AppleShowcase.vue'
 import WaitingRoomAdminView from '../views/WaitingRoomAdminView.vue'
@@ -240,6 +241,12 @@ const router = createRouter({
           name: 'settings',
           component: SettingsView,
           meta: { requiredMenuKey: 'settings' },
+        },
+        {
+          path: 'auto-team',
+          name: 'auto-team',
+          component: AutoTeamView,
+          meta: { requiredMenuKey: 'autoteam' },
         },
         {
           path: 'roles',

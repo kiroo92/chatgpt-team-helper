@@ -2671,4 +2671,312 @@ export const xianyuService = {
   },
 }
 
+export type AutoTeamStatus = 'active' | 'standby' | 'exhausted' | 'pending'
+
+export interface AutoTeamAccount {
+  id: number
+  email: string
+  status: AutoTeamStatus | string
+  planType?: string | null
+  chatgptAccountId?: string | null
+  cloudmailAccountId?: string | null
+  quotaPrimaryPct?: number | null
+  quotaPrimaryResetsAt?: number | null
+  quotaWeeklyPct?: number | null
+  quotaWeeklyResetsAt?: number | null
+  quotaExhaustedAt?: number | null
+  lastActiveAt?: number | null
+  lastError?: string | null
+  passwordStored: boolean
+  accessTokenStored: boolean
+  refreshTokenStored: boolean
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
+export interface AutoTeamSummary {
+  total: number
+  active: number
+  standby: number
+  exhausted: number
+  pending: number
+  targetSeats: number
+  enabled: boolean
+  workspaceUsers?: number | null
+  workspaceError?: string | null
+  workspaceManager?: {
+    id: number
+    email: string
+    chatgptAccountId: string
+  } | null
+}
+
+export interface AutoTeamSettings {
+  enabled: boolean
+  managerAccountId: number
+  targetSeats: number
+  autoCheck: {
+    enabled: boolean
+    intervalSeconds: number
+    thresholdPercent: number
+    minLow: number
+  }
+  cloudmail: {
+    baseUrl: string
+    email: string
+    domain: string
+    passwordSet: boolean
+    passwordStored?: boolean
+    password?: string
+  }
+  browser: {
+    executablePath: string
+    headless: boolean
+  }
+  mailPolling: {
+    intervalSeconds: number
+    timeoutSeconds: number
+  }
+  cpa: {
+    enabled: boolean
+    baseUrl: string
+    keySet: boolean
+    keyStored?: boolean
+    key?: string
+    syncOnChange: boolean
+  }
+}
+
+export interface AutoTeamManagerCandidate {
+  id: number
+  email: string
+  userCount: number
+  inviteCount: number
+  chatgptAccountId: string
+  isBanned: boolean
+  isOpen: boolean
+}
+
+export interface AutoTeamManualOAuthSession {
+  sessionId: string
+  authUrl: string
+  status: string
+  message: string
+  error?: string
+  callbackReceived: boolean
+  callbackSource: string
+  autoCallbackAvailable: boolean
+  expiresAt: string | null
+  result?: {
+    email: string
+    planType: string
+    accountId: string
+    organizationTitle: string
+  } | null
+  instructions?: string[]
+}
+
+export interface AutoTeamDiagnostics {
+  browser: {
+    available: boolean
+    executablePath: string
+    configuredPath: string
+    headless: boolean
+    requestedHeadless?: boolean
+    effectiveHeadless?: boolean
+    displayAvailable?: boolean
+    forcedHeadless?: boolean
+  }
+  cloudmail: {
+    configured: boolean
+    baseUrl: string
+    email: string
+    domain: string
+    passwordSet: boolean
+  }
+  cpa: {
+    enabled: boolean
+    configured: boolean
+    baseUrl: string
+    keySet: boolean
+    syncOnChange: boolean
+  }
+  manager: {
+    configured: boolean
+    managerAccountId: number
+    candidateCount: number
+    account?: {
+      id: number
+      email: string
+      chatgptAccountId: string
+    } | null
+    error?: string
+  }
+  oauth: {
+    redirectUri: string
+    redirectPort: number
+    redirectHost?: string
+  }
+}
+
+export interface AutoTeamCpaFile {
+  name: string
+  email: string
+  size?: number | null
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
+export interface AutoTeamCpaSyncResult {
+  activeCount: number
+  managedCount: number
+  cpaCount: number
+  uploaded: number
+  deleted: number
+  skipped: Array<{
+    email: string
+    reason: string
+  }>
+  failures: Array<{
+    name: string
+    email: string
+    error: string
+  }>
+  uploadedFiles: string[]
+  deletedFiles: string[]
+}
+
+export interface AutoTeamCheckResponse {
+  thresholdPercent: number
+  checkedCount: number
+  lowAccounts: AutoTeamAccount[]
+  accounts: AutoTeamAccount[]
+}
+
+export interface AutoTeamRotateResponse {
+  targetSeats: number
+  thresholdPercent: number
+  workspaceUsers: number
+  removed: Array<{
+    id: number
+    email: string
+    removed: boolean
+    alreadyMissing: boolean
+  }>
+  reused: AutoTeamAccount[]
+  created: AutoTeamAccount[]
+  check?: {
+    thresholdPercent?: number
+    checkedCount?: number
+    lowAccounts?: AutoTeamAccount[]
+  }
+  summary?: AutoTeamSummary
+}
+
+export const autoTeamService = {
+  async getSummary(): Promise<AutoTeamSummary> {
+    const response = await api.get('/auto-team/summary')
+    return response.data
+  },
+
+  async getDiagnostics(): Promise<AutoTeamDiagnostics> {
+    const response = await api.get('/auto-team/diagnostics')
+    return response.data
+  },
+
+  async getAccounts(): Promise<{ accounts: AutoTeamAccount[] }> {
+    const response = await api.get('/auto-team/accounts')
+    return response.data
+  },
+
+  async deleteAccount(id: number): Promise<{ message: string; account: AutoTeamAccount | null }> {
+    const response = await api.delete(`/auto-team/accounts/${id}`)
+    return response.data
+  },
+
+  async setAccountStatus(id: number, status: AutoTeamStatus): Promise<{ message: string; account: AutoTeamAccount | null }> {
+    const response = await api.patch(`/auto-team/accounts/${id}/status`, { status })
+    return response.data
+  },
+
+  async getSettings(): Promise<AutoTeamSettings> {
+    const response = await api.get('/auto-team/settings')
+    return response.data
+  },
+
+  async updateSettings(payload: AutoTeamSettings): Promise<{ message: string; settings: AutoTeamSettings }> {
+    const response = await api.put('/auto-team/settings', payload)
+    return response.data
+  },
+
+  async testCloudMail(): Promise<{ ok: boolean; message?: string; error?: string; cloudmail?: { baseUrl: string; email: string; domain: string } }> {
+    const response = await api.post('/auto-team/test-cloudmail')
+    return response.data
+  },
+
+  async testCpa(): Promise<{ ok: boolean; message?: string; error?: string; total: number; files: AutoTeamCpaFile[] }> {
+    const response = await api.post('/auto-team/test-cpa')
+    return response.data
+  },
+
+  async getCpaFiles(): Promise<{ total: number; files: AutoTeamCpaFile[] }> {
+    const response = await api.get('/auto-team/cpa/files')
+    return response.data
+  },
+
+  async syncToCpa(): Promise<{ message: string; result: AutoTeamCpaSyncResult }> {
+    const response = await api.post('/auto-team/cpa/sync')
+    return response.data
+  },
+
+  async getManagerCandidates(): Promise<{ items: AutoTeamManagerCandidate[] }> {
+    const response = await api.get('/auto-team/manager-candidates')
+    return response.data
+  },
+
+  async startManualOAuth(): Promise<AutoTeamManualOAuthSession> {
+    const response = await api.post('/auto-team/manual-oauth/start')
+    return response.data
+  },
+
+  async getManualOAuthSession(sessionId: string): Promise<AutoTeamManualOAuthSession> {
+    const response = await api.get(`/auto-team/manual-oauth/${encodeURIComponent(sessionId)}`)
+    return response.data
+  },
+
+  async cancelManualOAuthSession(sessionId: string): Promise<{ ok: boolean }> {
+    const response = await api.delete(`/auto-team/manual-oauth/${encodeURIComponent(sessionId)}`)
+    return response.data
+  },
+
+  async submitManualOAuthCallback(sessionId: string, callbackUrl: string): Promise<AutoTeamManualOAuthSession> {
+    const response = await api.post(`/auto-team/manual-oauth/${encodeURIComponent(sessionId)}/callback`, { callbackUrl })
+    return response.data
+  },
+
+  async finalizeManualOAuth(sessionId: string, password?: string): Promise<{
+    message: string
+    session: AutoTeamManualOAuthSession | null
+    account: AutoTeamAccount | null
+  }> {
+    const response = await api.post(`/auto-team/manual-oauth/${encodeURIComponent(sessionId)}/finalize`, { password })
+    return response.data
+  },
+
+  async createAccount(): Promise<{ message: string; account: AutoTeamAccount | null }> {
+    const response = await api.post('/auto-team/create')
+    return response.data
+  },
+
+  async checkAccounts(thresholdPercent?: number): Promise<AutoTeamCheckResponse> {
+    const response = await api.post('/auto-team/check', thresholdPercent ? { thresholdPercent } : {})
+    return response.data
+  },
+
+  async rotateAccounts(payload?: { targetSeats?: number; thresholdPercent?: number }): Promise<AutoTeamRotateResponse> {
+    const response = await api.post('/auto-team/rotate', payload || {})
+    return response.data
+  },
+}
+
 export default api

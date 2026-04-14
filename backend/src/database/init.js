@@ -389,6 +389,7 @@ const ensureRbacTables = (database) => {
       { key: 'user_info', label: '用户信息', path: '/admin/user-info', sortOrder: 2 },
       { key: 'accounts', label: '账号管理', path: '/admin/accounts', sortOrder: 3 },
       { key: 'redemption_codes', label: '兑换码管理', path: '/admin/redemption-codes', sortOrder: 4 },
+      { key: 'autoteam', label: 'AutoTeam', path: '/admin/auto-team', sortOrder: 5 },
       { key: 'order_management', label: '订单管理', path: '', sortOrder: 6 },
       { key: 'purchase_orders', label: '支付订单', path: '/admin/purchase-orders', parentKey: 'order_management', sortOrder: 1 },
       { key: 'xhs_orders', label: '小红书订单', path: '/admin/xhs-orders', parentKey: 'order_management', sortOrder: 2 },
@@ -571,6 +572,7 @@ const migrateUtcTimestampsToLocaltime = (database) => {
     { table: 'users', columns: ['created_at'] },
     { table: 'system_config', columns: ['updated_at'] },
     { table: 'gpt_accounts', columns: ['created_at', 'updated_at'] },
+    { table: 'autoteam_accounts', columns: ['created_at', 'updated_at'] },
     { table: 'linuxdo_users', columns: ['created_at', 'updated_at'] },
     { table: 'redemption_codes', columns: ['created_at', 'updated_at', 'redeemed_at', 'reserved_at', 'downstream_sold_at'] },
     { table: 'waiting_room_entries', columns: ['created_at', 'updated_at', 'reserved_at', 'boarded_at', 'left_at'] },
@@ -744,6 +746,86 @@ const ensureWaitingRoomTable = (database) => {
   const cooldownTableChanged = ensureWaitingRoomCooldownTable(database)
 
   return changed || cooldownTableChanged
+}
+
+const ensureAutoTeamTables = (database) => {
+  if (!database) return false
+  let changed = false
+
+  const existed = tableExists(database, 'autoteam_accounts')
+  database.run(`
+    CREATE TABLE IF NOT EXISTS autoteam_accounts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL,
+      password TEXT,
+      cloudmail_account_id TEXT,
+      status TEXT DEFAULT 'standby',
+      access_token TEXT,
+      refresh_token TEXT,
+      id_token TEXT,
+      auth_json TEXT,
+      chatgpt_account_id TEXT,
+      plan_type TEXT,
+      quota_primary_pct REAL,
+      quota_primary_resets_at INTEGER,
+      quota_weekly_pct REAL,
+      quota_weekly_resets_at INTEGER,
+      quota_exhausted_at INTEGER,
+      last_active_at INTEGER,
+      last_error TEXT,
+      created_at DATETIME DEFAULT (DATETIME('now', 'localtime')),
+      updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))
+    )
+  `)
+  if (!existed) changed = true
+
+  const columns = getTableColumns(database, 'autoteam_accounts')
+  const addColumn = (name, ddl) => {
+    if (columns.has(name)) return
+    database.run(`ALTER TABLE autoteam_accounts ADD COLUMN ${ddl}`)
+    columns.add(name)
+    changed = true
+    console.log(`[DB] 已添加 autoteam_accounts.${name} 列`)
+  }
+
+  addColumn('password', 'password TEXT')
+  addColumn('cloudmail_account_id', 'cloudmail_account_id TEXT')
+  addColumn('status', `status TEXT DEFAULT 'standby'`)
+  addColumn('access_token', 'access_token TEXT')
+  addColumn('refresh_token', 'refresh_token TEXT')
+  addColumn('id_token', 'id_token TEXT')
+  addColumn('auth_json', 'auth_json TEXT')
+  addColumn('chatgpt_account_id', 'chatgpt_account_id TEXT')
+  addColumn('plan_type', 'plan_type TEXT')
+  addColumn('quota_primary_pct', 'quota_primary_pct REAL')
+  addColumn('quota_primary_resets_at', 'quota_primary_resets_at INTEGER')
+  addColumn('quota_weekly_pct', 'quota_weekly_pct REAL')
+  addColumn('quota_weekly_resets_at', 'quota_weekly_resets_at INTEGER')
+  addColumn('quota_exhausted_at', 'quota_exhausted_at INTEGER')
+  addColumn('last_active_at', 'last_active_at INTEGER')
+  addColumn('last_error', 'last_error TEXT')
+  addColumn('created_at', `created_at DATETIME DEFAULT (DATETIME('now', 'localtime'))`)
+  addColumn('updated_at', `updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))`)
+
+  changed = ensureIndex(
+    database,
+    'idx_autoteam_accounts_email_norm',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_autoteam_accounts_email_norm ON autoteam_accounts (LOWER(TRIM(email)))'
+  ) || changed
+
+  changed = ensureIndex(
+    database,
+    'idx_autoteam_accounts_status',
+    'CREATE INDEX IF NOT EXISTS idx_autoteam_accounts_status ON autoteam_accounts (status)'
+  ) || changed
+
+  changed = ensureIndex(
+    database,
+    'idx_autoteam_accounts_quota_reset',
+    'CREATE INDEX IF NOT EXISTS idx_autoteam_accounts_quota_reset ON autoteam_accounts (quota_primary_resets_at)'
+  ) || changed
+
+  return changed
 }
 
 const ensureCoreIndexes = (database) => {
@@ -2252,8 +2334,9 @@ export async function initDatabase() {
         const pointsWithdrawalsCreated = ensurePointsWithdrawalsTable(database)
         const pointsLedgerCreated = ensurePointsLedgerTable(database)
         const announcementsCreated = ensureAnnouncementsTables(database)
+        const autoTeamCreated = ensureAutoTeamTables(database)
         const rbacInitialized = ensureRbacTables(database)
-        if (waitingRoomCreated || xhsTablesCreated || xianyuTablesCreated || linuxDoUsersCreated || accountRecoveryCreated || purchaseOrdersCreated || downstreamOrderItemsCreated || creditOrdersCreated || channelsCreated || purchaseProductsCreated || pointsWithdrawalsCreated || pointsLedgerCreated || announcementsCreated || rbacInitialized) {
+        if (waitingRoomCreated || xhsTablesCreated || xianyuTablesCreated || linuxDoUsersCreated || accountRecoveryCreated || purchaseOrdersCreated || downstreamOrderItemsCreated || creditOrdersCreated || channelsCreated || purchaseProductsCreated || pointsWithdrawalsCreated || pointsLedgerCreated || announcementsCreated || autoTeamCreated || rbacInitialized) {
           saveDatabase()
         }
 
@@ -2618,6 +2701,7 @@ export async function initDatabase() {
 	  const waitingRoomInitialized = ensureWaitingRoomTable(database)
 	  const xhsTablesInitialized = ensureXhsTables(database)
 	  const xianyuTablesInitialized = ensureXianyuTables(database)
+  const autoTeamTablesInitialized = ensureAutoTeamTables(database)
   const linuxDoUsersInitialized = ensureLinuxDoUsersTable(database)
   const accountRecoveryInitialized = ensureAccountRecoveryTable(database)
   const purchaseOrdersInitialized = ensurePurchaseOrdersTable(database)
@@ -2628,7 +2712,7 @@ export async function initDatabase() {
   const pointsWithdrawalsInitialized = ensurePointsWithdrawalsTable(database)
   const pointsLedgerInitialized = ensurePointsLedgerTable(database)
   const announcementsInitialized = ensureAnnouncementsTables(database)
-  if (waitingRoomInitialized || xhsTablesInitialized || xianyuTablesInitialized || linuxDoUsersInitialized || accountRecoveryInitialized || purchaseOrdersInitialized || downstreamOrderItemsInitialized || creditOrdersInitialized || channelsInitialized || purchaseProductsInitialized || pointsWithdrawalsInitialized || pointsLedgerInitialized || announcementsInitialized) {
+  if (waitingRoomInitialized || xhsTablesInitialized || xianyuTablesInitialized || autoTeamTablesInitialized || linuxDoUsersInitialized || accountRecoveryInitialized || purchaseOrdersInitialized || downstreamOrderItemsInitialized || creditOrdersInitialized || channelsInitialized || purchaseProductsInitialized || pointsWithdrawalsInitialized || pointsLedgerInitialized || announcementsInitialized) {
     saveDatabase()
   }
 

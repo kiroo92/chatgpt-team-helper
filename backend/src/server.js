@@ -7,6 +7,7 @@ import gptAccountsRoutes from './routes/gpt-accounts.js'
 import autoBoardingRoutes from './routes/auto-boarding.js'
 import redemptionCodesRoutes from './routes/redemption-codes.js'
 import openaiAccountsRoutes from './routes/openai-accounts.js'
+import autoTeamRoutes from './routes/auto-team.js'
 import linuxDoAuthRoutes from './routes/linuxdo-auth.js'
 import waitingRoomRoutes from './routes/waiting-room.js'
 import configRoutes from './routes/config.js'
@@ -31,6 +32,7 @@ import { startTelegramBot } from './services/telegram-bot.js'
 import { startXianyuLoginRefreshScheduler } from './services/xianyu-login-refresh.js'
 import { startXhsAutoSyncScheduler } from './services/xhs-auto-sync.js'
 import { startXianyuWsDeliveryBot } from './services/xianyu-ws-delivery.js'
+import { startAutoTeamScheduler } from './services/auto-team-scheduler.js'
 
 dotenv.config()
 
@@ -113,6 +115,7 @@ initDatabase()
 	    startXianyuLoginRefreshScheduler()
 	    startXianyuWsDeliveryBot()
 	    startXhsAutoSyncScheduler()
+      startAutoTeamScheduler()
 
 	    startServer()
 	  })
@@ -129,6 +132,7 @@ app.use('/api/gpt-accounts', gptAccountsRoutes)
 app.use('/api/auto-boarding', autoBoardingRoutes)
 app.use('/api/redemption-codes', redemptionCodesRoutes)
 app.use('/api/openai-accounts', openaiAccountsRoutes)
+app.use('/api/auto-team', autoTeamRoutes)
 app.use('/api/linuxdo', linuxDoAuthRoutes)
 app.use('/api/config', configRoutes)
 app.use('/api/version', versionRoutes)

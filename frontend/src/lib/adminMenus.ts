@@ -54,6 +54,7 @@ const ICONS_BY_MENU_KEY: Record<string, any> = {
   credit_orders: Coins,
   order_management: ShoppingCart,
   waiting_room: Train,
+  autoteam: Settings,
   settings: Settings,
   permission_management: Shield,
   role_management: Users,
@@ -64,6 +65,7 @@ const FALLBACK_ADMIN_MENU_TREE: AdminMenuDraftNode[] = [
   { key: 'stats', path: '/admin/stats', label: '数据统计' },
   { key: 'user_info', path: '/admin/user-info', label: '用户信息' },
   { key: 'accounts', path: '/admin/accounts', label: '账号管理' },
+  { key: 'autoteam', path: '/admin/auto-team', label: 'AutoTeam' },
   { key: 'redemption_codes', path: '/admin/redemption-codes', label: '兑换码管理' },
   {
     key: 'order_management',

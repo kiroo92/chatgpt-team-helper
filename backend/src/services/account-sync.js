@@ -727,8 +727,12 @@ export async function inviteAccountUser(accountId, email, options = {}) {
 
   if (status < 200 || status >= 300) {
     console.error('发送邀请失败:', status, String(text || '').slice(0, 2000))
+    const normalizedText = String(text || '').toLowerCase()
 
     if (status === 401) {
+      if (normalizedText.includes('delinquent subscription')) {
+        throw new AccountSyncError('工作区订阅欠费（Team has a delinquent subscription），当前 manager 账号暂时无法邀请新成员，请先恢复团队订阅后再试', 401)
+      }
       throw new AccountSyncError('Token 已过期或无效，请更新账号 token', 401)
     }
     if (status === 404) {
@@ -742,9 +746,46 @@ export async function inviteAccountUser(accountId, email, options = {}) {
   }
 
   const data = parseJsonOrThrow(text, { logContext: inviteLogContext, message: '邀请接口返回格式异常，无法解析' })
+  const normalizedEmail = trimmedEmail.toLowerCase()
+  const accountInvites = Array.isArray(data?.account_invites) ? data.account_invites : []
+  const erroredEmails = Array.isArray(data?.errored_emails) ? data.errored_emails : []
+
+  const matchedError = erroredEmails.find(item => String(item?.email_address || '').trim().toLowerCase() === normalizedEmail)
+  if (matchedError) {
+    const detail =
+      String(matchedError?.error || '').trim()
+      || String(data?.message || '').trim()
+      || 'OpenAI 邀请接口返回了错误'
+    throw new AccountSyncError(`发送工作区邀请失败：${detail}`, 400)
+  }
+
+  const matchedInviteFromResponse = accountInvites.find(
+    item => String(item?.email_address || item?.email || '').trim().toLowerCase() === normalizedEmail
+  ) || null
+
+  let matchedInvite = matchedInviteFromResponse
+  if (!matchedInvite) {
+    const inviteState = await requestAccountInvites(
+      account,
+      { offset: 0, limit: 20, query: trimmedEmail },
+      { proxy: options.proxy }
+    )
+    matchedInvite = (inviteState.items || []).find(
+      item => String(item?.email_address || '').trim().toLowerCase() === normalizedEmail
+    ) || null
+  }
+
+  if (!matchedInvite) {
+    console.error('邀请接口返回成功，但未找到对应邀请记录', {
+      ...inviteLogContext,
+      responseSample: JSON.stringify(data).slice(0, 1000)
+    })
+    throw new AccountSyncError('发送工作区邀请失败：接口未返回错误，但也没有创建可用邀请', 502)
+  }
 
   return {
     message: '邀请已发送',
-    invite: data
+    invite: data,
+    createdInvite: matchedInvite,
   }
 }

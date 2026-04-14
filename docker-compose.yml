@@ -8,6 +8,7 @@ services:
     container_name: auto-gpt-team
     ports:
       - "5173:5173" # 前端 Web 端口（API 通过 nginx 代理，无需暴露 3000）
+      - "1455:1455" # AutoTeam OAuth localhost 回调（仅当浏览器与 Docker 主机在同一台机器时可自动回调）
     volumes:
       # 持久化数据库文件
       - ./data:/app/backend/db
@@ -17,9 +18,13 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_PATH: ${DATABASE_PATH:-/app/backend/db/database.sqlite}
+      AUTO_TEAM_BROWSER_EXECUTABLE: ${AUTO_TEAM_BROWSER_EXECUTABLE:-/usr/bin/chromium-browser}
+      AUTO_TEAM_REDIRECT_PORT: ${AUTO_TEAM_REDIRECT_PORT:-1455}
+      AUTO_TEAM_REDIRECT_HOST: ${AUTO_TEAM_REDIRECT_HOST:-0.0.0.0}
+    shm_size: "1gb"
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5173/" ]
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:5173/" ]
       interval: 30s
       timeout: 10s
       retries: 3
